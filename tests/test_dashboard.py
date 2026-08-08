@@ -57,6 +57,22 @@ class DashboardTests(TestCase):
         self.assertContains(response, "Dashboard Away")
         self.assertContains(response, "OVER_2_5")
 
+    def test_dashboard_shows_near_premium_reason(self):
+        prediction = self._prediction(
+            kickoff=timezone.now() + timedelta(hours=3),
+            tier="",
+            market="BTTS",
+            odds="1.70",
+        )
+        prediction.edge = Decimal("0.03000")
+        prediction.expected_value = Decimal("0.05000")
+        prediction.save(update_fields=["edge", "expected_value"])
+
+        response = self.client.get("/dashboard/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Candidatos cercanos a Premium")
+        self.assertContains(response, "Edge &lt; 6%")
+
     def test_dashboard_uses_settled_premium_metrics(self):
         prediction = self._prediction(kickoff=timezone.now() - timedelta(days=1))
         prediction.fixture.status = "FT"
