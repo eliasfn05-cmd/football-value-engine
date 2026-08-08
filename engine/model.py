@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Dict, Optional
 
 from .filters import apply_filters
@@ -21,8 +20,8 @@ from .quantitative import (
 class FootballValueEngine:
     """Transparent rule-based quantitative engine for BTTS and Over 2.5.
 
-    The model deliberately exposes every adjustment in `reasons` so a future
-    backtest can measure whether each filter improves calibration and ROI.
+    Every adjustment is exposed in `reasons` so future backtests can measure
+    whether each filter improves calibration and ROI.
     """
 
     min_edge = 0.06
@@ -48,14 +47,15 @@ class FootballValueEngine:
         }
 
     def _score(self, probability: float, context_score_delta: float, edge: Optional[float], ev: Optional[float]) -> float:
-        # Probability contributes up to 65 points. Financial value contributes
-        # up to 25 and contextual filters can modify the total.
-        score = probability * 65.0
+        # 60 points represent the football profile, scaled around the useful
+        # 50%-75% probability range. Edge and EV contribute up to 30 points.
+        probability_component = 50.0 + clamp((probability - 0.50) / 0.25, 0.0, 1.0) * 30.0
+        value_component = 0.0
         if edge is not None:
-            score += clamp(edge / 0.12, 0.0, 1.0) * 12.5
+            value_component += clamp(edge / 0.12, 0.0, 1.0) * 15.0
         if ev is not None:
-            score += clamp(ev / 0.20, 0.0, 1.0) * 12.5
-        score += context_score_delta
+            value_component += clamp(ev / 0.20, 0.0, 1.0) * 15.0
+        score = probability_component + value_component + context_score_delta
         return round(clamp(score, 0.0, 100.0), 2)
 
     def _tier(self, market: str, probability: float, score: float, edge: Optional[float], ev: Optional[float]) -> str:
