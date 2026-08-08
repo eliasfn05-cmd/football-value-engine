@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import date
+from typing import Any
 
 import requests
 
@@ -18,8 +19,9 @@ class APIFootballProvider(SportsDataProvider):
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({"x-apisports-key": self.api_key})
+        self.last_request_meta: dict[str, Any] = {}
 
-    def _get(self, endpoint: str, params: dict) -> list[dict]:
+    def _get_payload(self, endpoint: str, params: dict) -> dict:
         response = self.session.get(
             f"{self.base_url}/{endpoint.lstrip('/')}",
             params=params,
@@ -30,7 +32,24 @@ class APIFootballProvider(SportsDataProvider):
         errors = payload.get("errors") or {}
         if errors:
             raise RuntimeError(f"API-Football error: {errors}")
-        return payload.get("response", [])
+
+        self.last_request_meta = {
+            "endpoint": endpoint,
+            "results": payload.get("results"),
+            "paging": payload.get("paging") or {},
+            "rate_limit_remaining": response.headers.get("x-ratelimit-requests-remaining"),
+            "rate_limit_limit": response.headers.get("x-ratelimit-requests-limit"),
+        }
+        return payload
+
+    def _get(self, endpoint: str, params: dict) -> list[dict]:
+        return self._get_payload(endpoint, params).get("response", [])
+
+    def account_status(self) -> list[dict]:
+        return self._get("status", {})
+
+    def bookmakers(self) -> list[dict]:
+        return self._get("odds/bookmakers", {})
 
     def fixtures_by_date(self, target_date: date) -> list[dict]:
         return self._get("fixtures", {"date": target_date.isoformat()})
