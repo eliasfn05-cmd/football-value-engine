@@ -10,6 +10,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from engine.batch_features import BatchFeatureEngineeringService
+from engine.competition_quality import classify_competition
 from engine.models import Fixture, FixtureScoreState, Prediction
 from engine.score_v8 import ScoreEngineV8, V8_MODEL_VERSION
 
@@ -133,6 +134,15 @@ class Command(BaseCommand):
         )
         return {"rejections": counts, "nearest": near[:5]}
 
+    @staticmethod
+    def _remove_excluded_fixture_state(fixtures: list[Fixture]) -> int:
+        excluded_ids = [fixture.id for fixture in fixtures if classify_competition(fixture).excluded]
+        if not excluded_ids:
+            return 0
+        Prediction.objects.filter(model_version=V8_MODEL_VERSION, fixture_id__in=excluded_ids).delete()
+        FixtureScoreState.objects.filter(model_version=V8_MODEL_VERSION, fixture_id__in=excluded_ids).delete()
+        return len(excluded_ids)
+
     def handle(self, *args, **options):
         fixture_id = options.get("fixture_id")
         raw_date = options.get("target_date")
@@ -154,6 +164,23 @@ class Command(BaseCommand):
             )
             if not fixture:
                 raise CommandError(f"Fixture {fixture_id} not found")
+            competition_quality = classify_competition(fixture)
+            if competition_quality.excluded:
+                Prediction.objects.filter(fixture=fixture, model_version=V8_MODEL_VERSION).delete()
+                FixtureScoreState.objects.filter(fixture=fixture, model_version=V8_MODEL_VERSION).delete()
+                self.stdout.write(
+                    json.dumps(
+                        {
+                            "fixture_id": fixture.external_id,
+                            "excluded": True,
+                            "reason": competition_quality.reason,
+                            "competition_quality": competition_quality.label,
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return
             result = engine.evaluate_and_persist(fixture)
             payload = self._fixture_payload(fixture, result, premium_only)
             self.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
@@ -166,15 +193,18 @@ class Command(BaseCommand):
 
         start = timezone.make_aware(datetime.combine(target_date, time.min))
         end = start + timedelta(days=1)
-        fixtures = list(
+        all_fixtures = list(
             Fixture.objects.select_related("home_team", "away_team", "competition_ref")
             .filter(kickoff__gte=start, kickoff__lt=end)
             .order_by("kickoff")
         )
+        excluded_count = self._remove_excluded_fixture_state(all_fixtures)
+        fixtures = [fixture for fixture in all_fixtures if not classify_competition(fixture).excluded]
 
         incremental = summary_only and not force
         self.stdout.write(
-            f"[score_v8] fixtures={len(fixtures)} incremental={str(incremental).lower()}; preloading batch features...",
+            f"[score_v8] fixtures={len(fixtures)} excluded_competition={excluded_count} "
+            f"incremental={str(incremental).lower()}; preloading batch features...",
             ending="\n",
         )
         preloader = BatchFeatureEngineeringService(
@@ -303,7 +333,7 @@ class Command(BaseCommand):
             )
 
         day_predictions = list(
-            Prediction.objects.select_related("fixture__home_team", "fixture__away_team")
+            Prediction.objects.select_related("fixture__home_team", "fixture__away_team", "fixture__competition_ref")
             .filter(
                 model_version=V8_MODEL_VERSION,
                 fixture__kickoff__gte=start,
@@ -311,6 +341,7 @@ class Command(BaseCommand):
             )
             .order_by("-score")
         )
+        day_predictions = [pred for pred in day_predictions if not classify_competition(pred.fixture).excluded]
         premium_predictions = [pred for pred in day_predictions if pred.tier == "TIER_A"]
         premium = [
             {
@@ -351,6 +382,7 @@ class Command(BaseCommand):
             "date": raw_date,
             "model_version": V8_MODEL_VERSION,
             "fixtures_total": len(fixtures),
+            "fixtures_excluded_competition": excluded_count,
             "fixtures_evaluated": evaluated_fixtures,
             "fixtures_skipped_incremental": skipped_fixtures,
             "premium_count": len(premium),
@@ -361,7 +393,7 @@ class Command(BaseCommand):
         self.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
         self.stdout.write(
             self.style.SUCCESS(
-                f"[score_v8] complete total={len(fixtures)} evaluated={evaluated_fixtures} "
+                f"[score_v8] complete total={len(fixtures)} excluded={excluded_count} evaluated={evaluated_fixtures} "
                 f"skipped={skipped_fixtures} premium={len(premium)} created={len(to_create)} "
                 f"updated={len(to_update)} unchanged_predictions={unchanged_predictions}"
             )
