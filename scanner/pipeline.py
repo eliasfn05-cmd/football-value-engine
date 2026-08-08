@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import time as time_module
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
+from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
 from engine.models import DailyPremiumSelection, Fixture, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.models import PipelineRun, PipelineStageRun, PremiumGenerationJob
@@ -27,10 +29,16 @@ class DailyPipeline:
     """Production orchestrator for the football-value workflow."""
 
     MODES = {"full", "morning", "refresh", "settlement", "detailed"}
+    INTERACTIVE_POOL_LIMIT = 12
 
     def __init__(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0):
         self.max_attempts = max(1, int(max_attempts))
         self.retry_delay_seconds = max(0.0, float(retry_delay_seconds))
+        self._candidate_pool_cache: dict[date, list[int]] = {}
+
+    @staticmethod
+    def _interactive_fast_enabled() -> bool:
+        return os.getenv("PREMIUM_INTERACTIVE_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _date_bounds(target_date: date):
@@ -69,6 +77,18 @@ class DailyPipeline:
         return StageResult(count, f"{count} predictions; {premium} raw tier-A", {"predictions": count, "raw_tier_a": premium})
 
     def _future_candidate_fixture_ids(self, target_date: date, *, limit: int = 30) -> list[int]:
+        if self._interactive_fast_enabled():
+            cached = self._candidate_pool_cache.get(target_date)
+            if cached is not None:
+                return cached[:limit]
+            pool = high_recall_candidate_pool(
+                target_date,
+                rule=CandidatePoolRule(limit=min(limit, self.INTERACTIVE_POOL_LIMIT)),
+            )
+            fixture_ids = [entry.fixture_id for entry in pool]
+            self._candidate_pool_cache[target_date] = fixture_ids
+            return fixture_ids
+
         start, end = self._date_bounds(target_date)
         future_start = max(start, timezone.now())
         qs = (
@@ -93,18 +113,25 @@ class DailyPipeline:
         return fixture_ids
 
     def _enrich(self, target_date: date) -> StageResult:
-        fixture_ids = self._future_candidate_fixture_ids(target_date, limit=30)
+        limit = self.INTERACTIVE_POOL_LIMIT if self._interactive_fast_enabled() else 30
+        fixture_ids = self._future_candidate_fixture_ids(target_date, limit=limit)
         self._run_command(
             "enrich_candidates",
             target_date=target_date.isoformat(),
-            limit=30,
+            limit=limit,
             min_score=50.0,
         )
         processed = len(fixture_ids)
-        return StageResult(processed, f"{processed} future shortlisted fixtures enriched", {"candidates": processed})
+        mode = "high-recall" if self._interactive_fast_enabled() else "standard"
+        return StageResult(
+            processed,
+            f"{processed} future shortlisted fixtures enriched ({mode})",
+            {"candidates": processed, "pool_mode": mode, "fixture_ids": fixture_ids},
+        )
 
     def _rescore_enriched(self, target_date: date) -> StageResult:
-        fixture_ids = self._future_candidate_fixture_ids(target_date, limit=30)
+        limit = self.INTERACTIVE_POOL_LIMIT if self._interactive_fast_enabled() else 30
+        fixture_ids = self._future_candidate_fixture_ids(target_date, limit=limit)
         fixtures = list(
             Fixture.objects.filter(id__in=fixture_ids)
             .select_related("home_team", "away_team")
@@ -129,7 +156,7 @@ class DailyPipeline:
         return StageResult(
             rescored,
             f"{rescored} enriched future fixtures rescored; {premium} raw tier-A",
-            {"rescored": rescored, "raw_tier_a": premium},
+            {"rescored": rescored, "raw_tier_a": premium, "fixture_ids": fixture_ids},
         )
 
     def _select_premium(self, target_date: date) -> StageResult:
