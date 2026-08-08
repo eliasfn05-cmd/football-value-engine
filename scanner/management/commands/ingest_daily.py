@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
-from datetime import datetime
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -26,7 +25,11 @@ class Command(BaseCommand):
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
         try:
-            report = DataIngestionService(APIFootballProvider()).ingest_date(
+            service = DataIngestionService(
+                APIFootballProvider(),
+                progress=lambda message: self.stdout.write(message),
+            )
+            report = service.ingest_date(
                 target_date,
                 include_details=not options.get("fixtures_only"),
             )
