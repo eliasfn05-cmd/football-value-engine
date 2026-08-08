@@ -43,21 +43,27 @@ class DashboardTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
 
-    def test_dashboard_renders_without_data(self):
+    def test_dashboard_renders_no_bet_without_premium(self):
         response = self.client.get("/dashboard/")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Dashboard Premium")
-        self.assertContains(response, "No hay Picks Premium futuros almacenados todavía.")
+        self.assertContains(response, "Premium Picks")
+        self.assertContains(response, "NO BET")
+        self.assertNotContains(response, "Candidatos cercanos a Premium")
+        self.assertNotContains(response, "DIAGNÓSTICO")
 
-    def test_dashboard_shows_future_premium_pick(self):
+    def test_dashboard_shows_future_premium_card(self):
         self._prediction(kickoff=timezone.now() + timedelta(hours=4))
         response = self.client.get("/dashboard/")
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Picks Premium del día")
+        self.assertContains(response, "PREMIUM #1")
         self.assertContains(response, "Dashboard Home")
         self.assertContains(response, "Dashboard Away")
         self.assertContains(response, "OVER_2_5")
+        self.assertContains(response, "Copiar Picks")
+        self.assertNotContains(response, "NO BET")
 
-    def test_dashboard_shows_near_premium_reason(self):
+    def test_near_premium_is_hidden_operationally_and_visible_in_developer(self):
         prediction = self._prediction(
             kickoff=timezone.now() + timedelta(hours=3),
             tier="",
@@ -68,10 +74,16 @@ class DashboardTests(TestCase):
         prediction.expected_value = Decimal("0.05000")
         prediction.save(update_fields=["edge", "expected_value"])
 
-        response = self.client.get("/dashboard/")
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Candidatos cercanos a Premium")
-        self.assertContains(response, "Edge &lt; 6%")
+        operational = self.client.get("/dashboard/")
+        self.assertEqual(operational.status_code, 200)
+        self.assertNotContains(operational, "Candidatos cercanos a Premium")
+        self.assertNotContains(operational, "Edge &lt; 6%")
+
+        developer = self.client.get("/developer/")
+        self.assertEqual(developer.status_code, 200)
+        self.assertContains(developer, "Developer Diagnostics")
+        self.assertContains(developer, "Candidatos cercanos a Premium")
+        self.assertContains(developer, "Edge &lt; 6%")
 
     def test_dashboard_uses_settled_premium_metrics(self):
         prediction = self._prediction(kickoff=timezone.now() - timedelta(days=1))
