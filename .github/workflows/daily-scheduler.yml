@@ -119,7 +119,7 @@ jobs:
             export PREMIUM_INTERACTIVE_FAST=1
             ATTEMPTS=2
             RETRY_DELAY=1
-            echo "Interactive Premium fast path enabled: shortlist<=8, no history backfill/standings, near-kickoff lineups only."
+            echo "Interactive Premium fast path enabled: Sprint 6.5 high-recall pool<=12, no history backfill/standings, near-kickoff lineups only."
           fi
           python manage.py daily_pipeline \
             --mode "${{ steps.schedule.outputs.mode }}" \
