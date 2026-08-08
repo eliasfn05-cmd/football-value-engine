@@ -29,7 +29,6 @@ services:
         value: "0.06"
       - key: MIN_EV
         value: "0.08"
-    dockerCommand: /bin/sh -c 'python manage.py migrate --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 2 --timeout 120'
 
 databases:
   - name: football-value-engine-db
