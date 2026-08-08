@@ -1,0 +1,105 @@
+name: daily-scheduler
+
+on:
+  schedule:
+    # 06:00 America/Lima (UTC-5)
+    - cron: "0 11 * * *"
+    # 23:30 America/Lima (04:30 UTC on the following UTC day)
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Pipeline mode"
+        required: true
+        default: "full"
+        type: choice
+        options:
+          - full
+          - morning
+          - settlement
+      target_date:
+        description: "Optional date YYYY-MM-DD; blank = current date in America/Lima"
+        required: false
+        type: string
+
+concurrency:
+  group: football-value-daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SECRET_KEY: scheduler-cli-only-key
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      PREFERRED_BOOKMAKER: Betano
+      APP_TIMEZONE: America/Lima
+      MODEL_VERSION: "8.0"
+      MIN_EDGE: "0.06"
+      MIN_EV: "0.08"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate scheduler secrets
+        shell: bash
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Missing GitHub secret: RENDER_DATABASE_URL"
+            exit 1
+          fi
+          if [ -z "$API_FOOTBALL_KEY" ]; then
+            echo "Missing GitHub secret: API_FOOTBALL_KEY"
+            exit 1
+          fi
+
+      - name: Resolve Lima date and mode
+        id: schedule
+        shell: bash
+        env:
+          MANUAL_MODE: ${{ github.event.inputs.mode }}
+          MANUAL_DATE: ${{ github.event.inputs.target_date }}
+          SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${MANUAL_MODE:-full}"
+          elif [ "$SCHEDULE_EXPRESSION" = "0 11 * * *" ]; then
+            MODE="morning"
+          else
+            MODE="settlement"
+          fi
+
+          if [ -n "$MANUAL_DATE" ]; then
+            TARGET_DATE="$MANUAL_DATE"
+          else
+            TARGET_DATE="$(TZ=America/Lima date +%F)"
+          fi
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$MODE target_date=$TARGET_DATE"
+
+      - name: Verify production schema is current
+        run: python manage.py migrate --check
+
+      - name: Run scheduled pipeline
+        run: >-
+          python manage.py daily_pipeline
+          --mode "${{ steps.schedule.outputs.mode }}"
+          --date "${{ steps.schedule.outputs.target_date }}"
+          --attempts 3
+          --retry-delay 5
