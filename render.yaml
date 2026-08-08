@@ -4,6 +4,7 @@ services:
     runtime: docker
     plan: free
     healthCheckPath: /health/
+    preDeployCommand: python manage.py migrate --noinput
     envVars:
       - key: SECRET_KEY
         generateValue: true
@@ -29,7 +30,7 @@ services:
         value: "0.06"
       - key: MIN_EV
         value: "0.08"
-    dockerCommand: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+    dockerCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
 
 databases:
   - name: football-value-engine-db
