@@ -28,7 +28,7 @@ jobs:
       - name: Verify migrations
         run: python manage.py makemigrations --check --dry-run
       - name: Run pipeline tests
-        run: python manage.py test tests.test_daily_pipeline -v 2
+        run: python manage.py test tests.test_daily_pipeline tests.test_batch_daily_path -v 2
       - name: Collect static assets
         run: python manage.py collectstatic --noinput
       - name: Verify dashboard tests
