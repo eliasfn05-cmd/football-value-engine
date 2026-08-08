@@ -5,7 +5,7 @@ from math import exp, factorial
 from typing import Dict, Optional
 
 
-MODEL_VERSION = "v7.2-sprint2"
+MODEL_VERSION = "v7.3-sprint2-context"
 
 
 @dataclass(frozen=True)
