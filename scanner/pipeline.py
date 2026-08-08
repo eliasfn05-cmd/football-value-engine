@@ -192,8 +192,9 @@ class DailyPipeline:
         ingest_failed = False
         warning_count = 0
         error_count = 0
+        dependent_on_ingest = {"SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8"}
         for name, fn, required in stages:
-            if name in {"SCORE_V8", "RESCORE_V8"} and ingest_failed:
+            if name in dependent_on_ingest and ingest_failed:
                 PipelineStageRun.objects.create(
                     pipeline=pipeline,
                     name=name,
