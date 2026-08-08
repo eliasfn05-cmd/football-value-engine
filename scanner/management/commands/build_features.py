@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
@@ -43,12 +43,19 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
-        start = timezone.make_aware(timezone.datetime.combine(target_date, timezone.datetime.min.time()))
-        end = start + timezone.timedelta(days=1)
+        start = timezone.make_aware(datetime.combine(target_date, time.min))
+        end = start + timedelta(days=1)
         fixtures = (
             Fixture.objects.select_related("home_team", "away_team", "competition_ref")
             .filter(kickoff__gte=start, kickoff__lt=end)
             .order_by("kickoff")
         )
         payload = [service.build(fixture).to_dict() for fixture in fixtures]
-        self.stdout.write(json.dumps({"date": raw_date, "count": len(payload), "features": payload}, indent=2, ensure_ascii=False, default=str))
+        self.stdout.write(
+            json.dumps(
+                {"date": raw_date, "count": len(payload), "features": payload},
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
