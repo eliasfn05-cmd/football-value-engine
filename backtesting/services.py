@@ -7,6 +7,7 @@ from statistics import mean
 from typing import Iterable
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from engine.models import Prediction
@@ -93,9 +94,13 @@ class SettlementService:
 
     def settle_finished(self, *, model_version: str | None = None) -> dict[str, int]:
         """Bulk settle only finished predictions that are not already settled."""
-        qs = Prediction.objects.select_related("fixture").filter(
-            fixture__home_goals__isnull=False,
-            fixture__away_goals__isnull=False,
+        qs = (
+            Prediction.objects.select_related("fixture")
+            .filter(
+                fixture__home_goals__isnull=False,
+                fixture__away_goals__isnull=False,
+            )
+            .filter(Q(outcome__isnull=True) | Q(outcome__result=PredictionOutcome.RESULT_PENDING))
         )
         if model_version:
             qs = qs.filter(model_version=model_version)
@@ -114,14 +119,10 @@ class SettlementService:
         stake = Decimal("1")
         to_create: list[PredictionOutcome] = []
         to_update: list[PredictionOutcome] = []
-        wins = losses = voids = skipped_existing = 0
+        wins = losses = voids = 0
 
         for prediction in predictions:
             previous = existing.get(prediction.id)
-            if previous is not None and previous.result != PredictionOutcome.RESULT_PENDING:
-                skipped_existing += 1
-                continue
-
             fixture = prediction.fixture
             result, reason = self._result_for(prediction, fixture.home_goals, fixture.away_goals)
             profit = self._profit(prediction, result, stake)
@@ -176,7 +177,7 @@ class SettlementService:
             "voids": voids,
             "created": len(to_create),
             "updated": len(to_update),
-            "skipped_existing": skipped_existing,
+            "skipped_existing": 0,
         }
 
 
