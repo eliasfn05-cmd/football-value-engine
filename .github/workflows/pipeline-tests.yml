@@ -37,6 +37,7 @@ jobs:
           tests.test_ingestion_fast_mode
           tests.test_sprint5_incremental
           tests.test_scanner
+          tests.test_premium_enrichment
           -v 2
       - name: Collect static assets
         run: python manage.py collectstatic --noinput
