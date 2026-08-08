@@ -13,7 +13,7 @@ from django.utils import timezone
 from backtesting.models import PredictionOutcome
 from engine.models import DailyPremiumSelection, Fixture, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
-from scanner.models import PipelineRun, PipelineStageRun
+from scanner.models import PipelineRun, PipelineStageRun, PremiumGenerationJob
 
 
 @dataclass(frozen=True)
@@ -24,15 +24,7 @@ class StageResult:
 
 
 class DailyPipeline:
-    """Production orchestrator for the football-value workflow.
-
-    Modes:
-    - morning: fast bulk fixture ingestion + first-pass V8 scoring.
-    - full: ingest + first score + selective enrichment + targeted future rescore + ranked Premium selection + settlement + learning.
-    - refresh: enrich a small shortlist + targeted future rescore + refresh ranked Premium selection.
-    - settlement: settlement + learning only.
-    - detailed: legacy/manual full-card enrichment; never scheduled normally.
-    """
+    """Production orchestrator for the football-value workflow."""
 
     MODES = {"full", "morning", "refresh", "settlement", "detailed"}
 
@@ -48,6 +40,14 @@ class DailyPipeline:
     @staticmethod
     def _run_command(name: str, **options) -> None:
         call_command(name, stdout=sys.stdout, stderr=sys.stderr, **options)
+
+    @staticmethod
+    def _sync_generation_job(job: PremiumGenerationJob | None, **updates) -> None:
+        if job is None:
+            return
+        for field, value in updates.items():
+            setattr(job, field, value)
+        job.save(update_fields=list(updates.keys()))
 
     def _ingest(self, target_date: date, *, fixtures_only: bool = False) -> StageResult:
         self._run_command("ingest_daily", target_date=target_date.isoformat(), fixtures_only=fixtures_only)
@@ -198,8 +198,23 @@ class DailyPipeline:
         return stage
 
     @transaction.atomic
-    def _create_run(self, target_date: date, mode: str) -> PipelineRun:
-        return PipelineRun.objects.create(target_date=target_date, metadata={"model_version": V8_MODEL_VERSION, "mode": mode})
+    def _create_run(self, target_date: date, mode: str, generation_job_id: int | None = None) -> tuple[PipelineRun, PremiumGenerationJob | None]:
+        pipeline = PipelineRun.objects.create(target_date=target_date, metadata={"model_version": V8_MODEL_VERSION, "mode": mode})
+        job = None
+        if generation_job_id is not None:
+            job = PremiumGenerationJob.objects.select_for_update().filter(pk=generation_job_id).first()
+            if job is None:
+                raise ValueError(f"PremiumGenerationJob #{generation_job_id} not found")
+            if job.target_date != target_date:
+                raise ValueError(f"PremiumGenerationJob #{generation_job_id} target date mismatch")
+            job.pipeline = pipeline
+            job.status = PremiumGenerationJob.STATUS_RUNNING
+            job.current_stage = "STARTING"
+            job.progress_pct = 1
+            job.message = "Worker iniciado; preparando pipeline."
+            job.started_at = timezone.now()
+            job.save(update_fields=["pipeline", "status", "current_stage", "progress_pct", "message", "started_at"])
+        return pipeline, job
 
     def _stages_for(self, target_date: date, mode: str):
         if mode == "morning":
@@ -236,11 +251,11 @@ class DailyPipeline:
             ("LEARNING", lambda: self._learning(target_date), False),
         ]
 
-    def run(self, target_date: date, *, mode: str = "full") -> PipelineRun:
+    def run(self, target_date: date, *, mode: str = "full", generation_job_id: int | None = None) -> PipelineRun:
         mode = str(mode).lower().strip()
         if mode not in self.MODES:
             raise ValueError(f"Unsupported pipeline mode: {mode}")
-        pipeline = self._create_run(target_date, mode)
+        pipeline, generation_job = self._create_run(target_date, mode, generation_job_id)
         started = timezone.now()
         stages = self._stages_for(target_date, mode)
         print(f"[pipeline #{pipeline.id}] mode={mode} date={target_date} stages={len(stages)}", flush=True)
@@ -249,7 +264,15 @@ class DailyPipeline:
         warning_count = 0
         error_count = 0
         dependent_on_ingest = {"SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8", "SELECT_PREMIUM"}
-        for name, fn, required in stages:
+
+        for index, (name, fn, required) in enumerate(stages, start=1):
+            start_progress = max(2, int(((index - 1) / max(1, len(stages))) * 95))
+            self._sync_generation_job(
+                generation_job,
+                current_stage=name,
+                progress_pct=start_progress,
+                message=f"Ejecutando {name}…",
+            )
             if name in dependent_on_ingest and ingest_failed:
                 PipelineStageRun.objects.create(
                     pipeline=pipeline,
@@ -262,15 +285,21 @@ class DailyPipeline:
                 )
                 warning_count += 1
                 print(f"[pipeline #{pipeline.id}] SKIP {name} because INGEST failed", flush=True)
-                continue
-            stage = self._run_stage(pipeline, name, fn, required=required)
-            if stage.status == PipelineStageRun.STATUS_FAILED:
-                required_failed = True
-                error_count += 1
-                if name == "INGEST":
-                    ingest_failed = True
-            elif stage.status == PipelineStageRun.STATUS_WARNING:
-                warning_count += 1
+            else:
+                stage = self._run_stage(pipeline, name, fn, required=required)
+                if stage.status == PipelineStageRun.STATUS_FAILED:
+                    required_failed = True
+                    error_count += 1
+                    if name == "INGEST":
+                        ingest_failed = True
+                elif stage.status == PipelineStageRun.STATUS_WARNING:
+                    warning_count += 1
+            end_progress = min(97, int((index / max(1, len(stages))) * 97))
+            self._sync_generation_job(
+                generation_job,
+                progress_pct=end_progress,
+                message=f"{name} completado.",
+            )
 
         start, end = self._date_bounds(target_date)
         fixtures_count = Fixture.objects.filter(kickoff__gte=start, kickoff__lt=end).count()
@@ -303,6 +332,31 @@ class DailyPipeline:
         else:
             pipeline.status = PipelineRun.STATUS_SUCCESS
         pipeline.save()
+
+        if generation_job is not None:
+            status_map = {
+                PipelineRun.STATUS_SUCCESS: PremiumGenerationJob.STATUS_SUCCESS,
+                PipelineRun.STATUS_PARTIAL: PremiumGenerationJob.STATUS_PARTIAL,
+                PipelineRun.STATUS_FAILED: PremiumGenerationJob.STATUS_FAILED,
+            }
+            generation_job.status = status_map[pipeline.status]
+            generation_job.current_stage = "COMPLETE" if pipeline.status != PipelineRun.STATUS_FAILED else "FAILED"
+            generation_job.progress_pct = 100
+            generation_job.message = (
+                f"Completado: {premium_count} Pick(s) Premium."
+                if pipeline.status != PipelineRun.STATUS_FAILED
+                else "El pipeline terminó con errores."
+            )
+            generation_job.finished_at = finished
+            generation_job.metadata = {
+                **(generation_job.metadata or {}),
+                "fixtures_count": fixtures_count,
+                "predictions_count": predictions_count,
+                "premium_count": premium_count,
+                "duration_seconds": pipeline.duration_seconds,
+            }
+            generation_job.save(update_fields=["status", "current_stage", "progress_pct", "message", "finished_at", "metadata"])
+
         print(
             f"[pipeline #{pipeline.id}] FINISH status={pipeline.status} fixtures={fixtures_count} "
             f"predictions={predictions_count} premium={premium_count} duration={pipeline.duration_seconds}s",
