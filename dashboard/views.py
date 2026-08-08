@@ -15,3 +15,8 @@ def health(request):
 def dashboard_home(request):
     context = DashboardService().build()
     return render(request, "dashboard/index.html", context)
+
+
+def developer_dashboard(request):
+    context = DashboardService().build_developer()
+    return render(request, "dashboard/developer.html", context)
