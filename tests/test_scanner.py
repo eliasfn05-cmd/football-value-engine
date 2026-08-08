@@ -47,7 +47,7 @@ class ScannerProfileTests(unittest.TestCase):
         self.assertEqual(quotes["over25"].decimal_odds, 1.91)
         self.assertEqual(quotes["btts"].bookmaker, "Betano")
 
-    def test_missing_betano_does_not_fallback(self):
+    def test_missing_betano_does_not_fallback_by_default(self):
         payload = [{
             "bookmakers": [{
                 "name": "OtherBook",
@@ -57,6 +57,30 @@ class ScannerProfileTests(unittest.TestCase):
         quotes = parse_quotes(payload, "Betano")
         self.assertIsNone(quotes["btts"])
         self.assertIsNone(quotes["over25"])
+
+    def test_explicit_fallback_uses_bookmaker_with_best_target_market_coverage(self):
+        payload = [{
+            "bookmakers": [
+                {
+                    "name": "PartialBook",
+                    "bets": [
+                        {"name": "Goals Over/Under", "values": [{"value": "Over 2.5", "odd": "2.10"}]},
+                    ],
+                },
+                {
+                    "name": "ReferenceBook",
+                    "bets": [
+                        {"name": "Both Teams Score", "values": [{"value": "Yes", "odd": "1.95"}]},
+                        {"name": "Goals Over/Under", "values": [{"value": "Over 2.5", "odd": "2.02"}]},
+                    ],
+                },
+            ]
+        }]
+        quotes = parse_quotes(payload, "Betano", allow_fallback=True)
+        self.assertEqual(quotes["btts"].decimal_odds, 1.95)
+        self.assertEqual(quotes["over25"].decimal_odds, 2.02)
+        self.assertEqual(quotes["btts"].bookmaker, "ReferenceBook")
+        self.assertEqual(quotes["over25"].bookmaker, "ReferenceBook")
 
 
 if __name__ == "__main__":
