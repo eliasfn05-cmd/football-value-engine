@@ -36,6 +36,7 @@ jobs:
           tests.test_batch_daily_path
           tests.test_ingestion_fast_mode
           tests.test_sprint5_incremental
+          tests.test_sprint6_premium_selection
           tests.test_scanner
           tests.test_premium_enrichment
           -v 2
