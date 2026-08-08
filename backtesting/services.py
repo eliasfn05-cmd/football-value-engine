@@ -13,6 +13,9 @@ from engine.models import Prediction
 from .models import LearningSnapshot, PredictionOutcome
 
 
+SETTLEMENT_BATCH_SIZE = 1000
+
+
 @dataclass(frozen=True)
 class MetricSummary:
     scope: str
@@ -66,6 +69,7 @@ class SettlementService:
 
     @transaction.atomic
     def settle_prediction(self, prediction: Prediction, *, stake_units: Decimal = Decimal("1")) -> PredictionOutcome | None:
+        """Single-prediction compatibility path used by tests/manual inspection."""
         fixture = prediction.fixture
         if fixture.home_goals is None or fixture.away_goals is None:
             return None
@@ -87,6 +91,12 @@ class SettlementService:
         return outcome
 
     def settle_finished(self, *, model_version: str | None = None) -> dict[str, int]:
+        """Bulk settle only finished predictions that are not already settled.
+
+        This is the production fast path. It avoids one update_or_create per
+        historical prediction and keeps repeated pipeline runs effectively
+        incremental.
+        """
         qs = Prediction.objects.select_related("fixture").filter(
             fixture__home_goals__isnull=False,
             fixture__away_goals__isnull=False,
@@ -94,16 +104,84 @@ class SettlementService:
         if model_version:
             qs = qs.filter(model_version=model_version)
 
-        settled = wins = losses = voids = 0
-        for prediction in qs.iterator():
-            outcome = self.settle_prediction(prediction)
-            if outcome is None:
+        predictions = list(qs.iterator(chunk_size=2000))
+        if not predictions:
+            return {"settled": 0, "wins": 0, "losses": 0, "voids": 0, "skipped_existing": 0}
+
+        prediction_ids = [prediction.id for prediction in predictions]
+        existing = {
+            outcome.prediction_id: outcome
+            for outcome in PredictionOutcome.objects.filter(prediction_id__in=prediction_ids).iterator(chunk_size=2000)
+        }
+
+        now = timezone.now()
+        stake = Decimal("1")
+        to_create: list[PredictionOutcome] = []
+        to_update: list[PredictionOutcome] = []
+        wins = losses = voids = skipped_existing = 0
+
+        for prediction in predictions:
+            previous = existing.get(prediction.id)
+            if previous is not None and previous.result != PredictionOutcome.RESULT_PENDING:
+                skipped_existing += 1
                 continue
-            settled += 1
-            wins += int(outcome.result == PredictionOutcome.RESULT_WIN)
-            losses += int(outcome.result == PredictionOutcome.RESULT_LOSS)
-            voids += int(outcome.result == PredictionOutcome.RESULT_VOID)
-        return {"settled": settled, "wins": wins, "losses": losses, "voids": voids}
+
+            fixture = prediction.fixture
+            result, reason = self._result_for(prediction, fixture.home_goals, fixture.away_goals)
+            profit = self._profit(prediction, result, stake)
+
+            if result == PredictionOutcome.RESULT_WIN:
+                wins += 1
+            elif result == PredictionOutcome.RESULT_LOSS:
+                losses += 1
+            else:
+                voids += 1
+
+            if previous is None:
+                to_create.append(
+                    PredictionOutcome(
+                        prediction=prediction,
+                        result=result,
+                        home_goals=fixture.home_goals,
+                        away_goals=fixture.away_goals,
+                        stake_units=stake,
+                        profit_units=profit,
+                        settled_at=now,
+                        settlement_reason=reason,
+                    )
+                )
+            else:
+                previous.result = result
+                previous.home_goals = fixture.home_goals
+                previous.away_goals = fixture.away_goals
+                previous.stake_units = stake
+                previous.profit_units = profit
+                previous.settled_at = now
+                previous.settlement_reason = reason
+                to_update.append(previous)
+
+        if to_create:
+            PredictionOutcome.objects.bulk_create(to_create, batch_size=SETTLEMENT_BATCH_SIZE, ignore_conflicts=True)
+        if to_update:
+            PredictionOutcome.objects.bulk_update(
+                to_update,
+                [
+                    "result", "home_goals", "away_goals", "stake_units",
+                    "profit_units", "settled_at", "settlement_reason",
+                ],
+                batch_size=SETTLEMENT_BATCH_SIZE,
+            )
+
+        settled = len(to_create) + len(to_update)
+        return {
+            "settled": settled,
+            "wins": wins,
+            "losses": losses,
+            "voids": voids,
+            "created": len(to_create),
+            "updated": len(to_update),
+            "skipped_existing": skipped_existing,
+        }
 
 
 class LearningAnalyticsService:
