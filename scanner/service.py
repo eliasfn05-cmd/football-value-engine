@@ -11,6 +11,7 @@ from engine.model import FootballValueEngine
 from engine.models import Fixture, OddsSnapshot, Prediction, Team
 from engine.quantitative import MODEL_VERSION, MarketEvaluation
 
+from .context import enrich_match_context
 from .odds import parse_quotes
 from .profiles import build_match_context
 from .providers.base import SportsDataProvider
@@ -102,12 +103,23 @@ class DailyScanner:
         h2h = self.provider.head_to_head(home_id, away_id, last=5)
         odds_payload = self.provider.fixture_odds(external_fixture_id)
         quotes = parse_quotes(odds_payload)
+
         context = build_match_context(raw_fixture, home_history, away_history, h2h)
+        context, advanced_context = enrich_match_context(
+            self.provider,
+            raw_fixture,
+            context,
+            home_history,
+            away_history,
+        )
+
         evaluations = self.engine.evaluate(
             context,
             btts_quote=quotes["btts"],
             over25_quote=quotes["over25"],
         )
+        for evaluation in evaluations.values():
+            evaluation.reasons.update(advanced_context)
 
         self._save_quote(fixture, "BTTS", "YES", quotes["btts"])
         self._save_quote(fixture, "OVER_2_5", "OVER", quotes["over25"])
@@ -117,6 +129,7 @@ class DailyScanner:
             "fixture_id": fixture.external_id,
             "fixture": str(fixture),
             "kickoff": fixture.kickoff.isoformat(),
+            "advanced_context": advanced_context,
             "btts": asdict(evaluations["btts"]),
             "over25": asdict(evaluations["over25"]),
             "prediction_ids": {name: prediction.id for name, prediction in saved.items()},
