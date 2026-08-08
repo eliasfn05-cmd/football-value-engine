@@ -8,10 +8,10 @@ from scanner.pipeline import DailyPipeline, StageResult
 
 
 class DailyPipelineTests(TestCase):
-    def test_successful_pipeline_persists_all_stages(self):
+    def test_successful_pipeline_persists_all_stages_and_uses_fast_ingest(self):
         pipeline = DailyPipeline(max_attempts=2, retry_delay_seconds=0)
         with (
-            patch.object(pipeline, "_ingest", return_value=StageResult(12, "12 fixtures", {"fixtures": 12})),
+            patch.object(pipeline, "_ingest", return_value=StageResult(12, "12 fixtures", {"fixtures": 12})) as ingest,
             patch.object(pipeline, "_score", return_value=StageResult(24, "24 predictions", {"predictions": 24, "premium": 2})),
             patch.object(pipeline, "_settle", return_value=StageResult(3, "3 settled", {"new": 3})),
             patch.object(pipeline, "_learning", return_value=StageResult(8, "learning refreshed", {"premium_outcomes": 8})),
@@ -22,6 +22,20 @@ class DailyPipelineTests(TestCase):
         self.assertEqual(run.stages.count(), 4)
         self.assertEqual(run.metadata["mode"], "full")
         self.assertTrue(all(stage.status == PipelineStageRun.STATUS_SUCCESS for stage in run.stages.all()))
+        ingest.assert_called_once_with(date(2026, 8, 8), fixtures_only=True)
+
+    def test_detailed_mode_is_explicit_and_uses_detailed_ingestion(self):
+        pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
+        with (
+            patch.object(pipeline, "_ingest", return_value=StageResult(10, "detailed")) as ingest,
+            patch.object(pipeline, "_score", return_value=StageResult(20, "scored")),
+            patch.object(pipeline, "_settle", return_value=StageResult(0, "settled")),
+            patch.object(pipeline, "_learning", return_value=StageResult(0, "learned")),
+        ):
+            run = pipeline.run(date(2026, 8, 8), mode="detailed")
+
+        self.assertEqual(run.metadata["mode"], "detailed")
+        ingest.assert_called_once_with(date(2026, 8, 8), fixtures_only=False)
 
     def test_morning_mode_runs_only_ingest_and_score(self):
         pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
@@ -35,7 +49,7 @@ class DailyPipelineTests(TestCase):
 
         self.assertEqual(run.metadata["mode"], "morning")
         self.assertEqual(list(run.stages.values_list("name", flat=True)), ["INGEST", "SCORE_V8"])
-        ingest.assert_called_once()
+        ingest.assert_called_once_with(date(2026, 8, 8), fixtures_only=True)
         score.assert_called_once()
         settle.assert_not_called()
         learning.assert_not_called()
