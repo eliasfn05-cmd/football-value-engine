@@ -55,7 +55,11 @@ class DailyPipeline:
         return StageResult(count, f"{count} fixtures stored ({mode} ingestion)", {"fixtures": count, "ingestion_mode": mode})
 
     def _score(self, target_date: date) -> StageResult:
-        self._run_command("score_v8", target_date=target_date.isoformat())
+        self._run_command(
+            "score_v8",
+            target_date=target_date.isoformat(),
+            summary_only=True,
+        )
         start, end = self._date_bounds(target_date)
         qs = Prediction.objects.filter(
             model_version=V8_MODEL_VERSION,
