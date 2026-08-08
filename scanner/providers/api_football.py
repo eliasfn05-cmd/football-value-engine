@@ -71,3 +71,9 @@ class APIFootballProvider(SportsDataProvider):
 
     def fixture_lineups(self, fixture_id: int | str) -> list[dict]:
         return self._get("fixtures/lineups", {"fixture": fixture_id})
+
+    def fixture_statistics(self, fixture_id: int | str) -> list[dict]:
+        return self._get("fixtures/statistics", {"fixture": fixture_id})
+
+    def standings(self, league_id: int | str, season: int | str) -> list[dict]:
+        return self._get("standings", {"league": league_id, "season": season})
