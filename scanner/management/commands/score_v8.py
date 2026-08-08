@@ -13,9 +13,6 @@ from engine.models import Fixture, Prediction
 from engine.score_v8 import ScoreEngineV8, V8_MODEL_VERSION
 
 
-# 500 keeps PostgreSQL statements bounded while cutting round trips versus the
-# previous 200-row batches. More importantly, unchanged rows never reach this
-# persistence path at all.
 PERSIST_BATCH_SIZE = 500
 
 
@@ -37,11 +34,6 @@ class Command(BaseCommand):
 
     @classmethod
     def _prediction_defaults(cls, evaluation):
-        """Normalize values exactly as Prediction DecimalFields store them.
-
-        Comparing normalized values lets repeated daily/refresh runs skip rows
-        whose persisted representation is already identical.
-        """
         return {
             "probability": cls._decimal(evaluation["probability"], 5),
             "fair_odds": cls._decimal(evaluation["fair_odds"], 3),
@@ -96,7 +88,10 @@ class Command(BaseCommand):
         )
 
         self.stdout.write(f"[score_v8] fixtures={len(fixtures)}; preloading batch features...", ending="\n")
-        preloader = BatchFeatureEngineeringService(fixtures)
+        preloader = BatchFeatureEngineeringService(
+            fixtures,
+            progress=lambda message: self.stdout.write(message, ending="\n"),
+        )
         preloader.preload()
         self.stdout.write("[score_v8] feature preload complete; evaluating in memory...", ending="\n")
 
@@ -167,10 +162,7 @@ class Command(BaseCommand):
             with transaction.atomic():
                 Prediction.objects.bulk_create(batch, batch_size=PERSIST_BATCH_SIZE)
             created_done += len(batch)
-            self.stdout.write(
-                f"[score_v8] persisted creates {created_done}/{len(to_create)}",
-                ending="\n",
-            )
+            self.stdout.write(f"[score_v8] persisted creates {created_done}/{len(to_create)}", ending="\n")
 
         updated_done = 0
         for offset in range(0, len(to_update), PERSIST_BATCH_SIZE):
@@ -178,10 +170,7 @@ class Command(BaseCommand):
             with transaction.atomic():
                 Prediction.objects.bulk_update(batch, update_fields, batch_size=PERSIST_BATCH_SIZE)
             updated_done += len(batch)
-            self.stdout.write(
-                f"[score_v8] persisted updates {updated_done}/{len(to_update)}",
-                ending="\n",
-            )
+            self.stdout.write(f"[score_v8] persisted updates {updated_done}/{len(to_update)}", ending="\n")
 
         premium.sort(key=lambda item: ((item.get("expected_value") or -999), item.get("score") or 0), reverse=True)
         payload = {
