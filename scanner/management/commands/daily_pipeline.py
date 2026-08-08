@@ -7,10 +7,16 @@ from scanner.pipeline import DailyPipeline
 
 
 class Command(BaseCommand):
-    help = "Run the production daily pipeline with retries and persisted observability."
+    help = "Run the production pipeline with retries, modes and persisted observability."
 
     def add_arguments(self, parser):
         parser.add_argument("--date", dest="target_date", help="YYYY-MM-DD. Defaults to today in America/Lima.")
+        parser.add_argument(
+            "--mode",
+            choices=["full", "morning", "settlement"],
+            default="full",
+            help="full=all stages, morning=ingest+score, settlement=settle+learning.",
+        )
         parser.add_argument("--attempts", type=int, default=3, help="Maximum attempts per stage (default 3).")
         parser.add_argument("--retry-delay", type=float, default=1.0, help="Seconds between retries (default 1).")
 
@@ -21,13 +27,14 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
+        mode = options["mode"]
         pipeline = DailyPipeline(
             max_attempts=options["attempts"],
             retry_delay_seconds=options["retry_delay"],
-        ).run(target_date)
+        ).run(target_date, mode=mode)
 
         self.stdout.write(
-            f"Pipeline #{pipeline.id} {pipeline.target_date} -> {pipeline.status} | "
+            f"Pipeline #{pipeline.id} mode={mode} {pipeline.target_date} -> {pipeline.status} | "
             f"fixtures={pipeline.fixtures_count} predictions={pipeline.predictions_count} "
             f"premium={pipeline.premium_count} settled={pipeline.settled_count} "
             f"warnings={pipeline.warning_count} errors={pipeline.error_count} "
