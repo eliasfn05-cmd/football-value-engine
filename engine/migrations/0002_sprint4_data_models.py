@@ -78,14 +78,14 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name="standingsnapshot",
-            index=models.Index(fields=["competition", "captured_at"], name="engine_stan_competi_captured_idx"),
+            index=models.Index(fields=["competition", "captured_at"], name="stand_comp_cap_idx"),
         ),
         migrations.AddIndex(
             model_name="teamstatisticssnapshot",
-            index=models.Index(fields=["fixture", "team", "captured_at"], name="engine_team_fixture_team_capt_idx"),
+            index=models.Index(fields=["fixture", "team", "captured_at"], name="teamstat_fix_team_cap_idx"),
         ),
         migrations.AddIndex(
             model_name="lineupsnapshot",
-            index=models.Index(fields=["fixture", "team", "captured_at"], name="engine_line_fixture_team_capt_idx"),
+            index=models.Index(fields=["fixture", "team", "captured_at"], name="lineup_fix_team_cap_idx"),
         ),
     ]
