@@ -23,6 +23,12 @@ class Command(BaseCommand):
         )
         parser.add_argument("--attempts", type=int, default=3, help="Maximum attempts per stage (default 3).")
         parser.add_argument("--retry-delay", type=float, default=1.0, help="Seconds between retries (default 1).")
+        parser.add_argument(
+            "--generation-job-id",
+            dest="generation_job_id",
+            type=int,
+            help="Optional PremiumGenerationJob id created by the web dashboard.",
+        )
 
     def handle(self, *args, **options):
         raw_date = options.get("target_date")
@@ -35,7 +41,11 @@ class Command(BaseCommand):
         pipeline = DailyPipeline(
             max_attempts=options["attempts"],
             retry_delay_seconds=options["retry_delay"],
-        ).run(target_date, mode=mode)
+        ).run(
+            target_date,
+            mode=mode,
+            generation_job_id=options.get("generation_job_id"),
+        )
 
         self.stdout.write(
             f"Pipeline #{pipeline.id} mode={mode} {pipeline.target_date} -> {pipeline.status} | "
