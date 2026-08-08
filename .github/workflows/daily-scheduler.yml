@@ -61,7 +61,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -q -r requirements.txt
 
       - name: Validate scheduler secrets
         shell: bash
@@ -112,12 +112,18 @@ jobs:
         shell: bash
         run: |
           EXTRA_ARGS=()
+          ATTEMPTS=3
+          RETRY_DELAY=5
           if [ -n "${{ steps.schedule.outputs.generation_job_id }}" ]; then
             EXTRA_ARGS+=(--generation-job-id "${{ steps.schedule.outputs.generation_job_id }}")
+            export PREMIUM_INTERACTIVE_FAST=1
+            ATTEMPTS=2
+            RETRY_DELAY=1
+            echo "Interactive Premium fast path enabled: shortlist<=8, no history backfill/standings, near-kickoff lineups only."
           fi
           python manage.py daily_pipeline \
             --mode "${{ steps.schedule.outputs.mode }}" \
             --date "${{ steps.schedule.outputs.target_date }}" \
-            --attempts 3 \
-            --retry-delay 5 \
+            --attempts "$ATTEMPTS" \
+            --retry-delay "$RETRY_DELAY" \
             "${EXTRA_ARGS[@]}"
