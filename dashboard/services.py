@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from django.db.models import Avg
 from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
@@ -30,17 +30,6 @@ class DashboardMetrics:
 
 class DashboardService:
     """Prepare read-only, presentation-friendly data for the web dashboard."""
-
-    REJECTION_LABELS = {
-        "insufficient_data_quality": "Calidad insuficiente",
-        "insufficient_home_venue_sample": "Poca muestra local",
-        "insufficient_away_venue_sample": "Poca muestra visitante",
-        "missing_odds": "Sin cuota",
-        "probability": "Probabilidad baja",
-        "edge": "Edge < 6%",
-        "ev": "EV < 8%",
-        "score": "Score < 80",
-    }
 
     def __init__(self, model_version: str = V8_MODEL_VERSION):
         self.model_version = model_version
@@ -75,74 +64,72 @@ class DashboardService:
             .order_by("fixture__kickoff", "-score")[:limit]
         )
 
-    @classmethod
-    def _rejection_codes(cls, prediction: Prediction) -> list[str]:
-        codes: list[str] = []
-        reasons = prediction.reasons or {}
-        for failure in reasons.get("v8_gate_failures") or []:
-            if failure not in codes:
-                codes.append(failure)
-        if prediction.market_odds is None:
-            codes.append("missing_odds")
-        probability = float(prediction.probability)
-        probability_floor = 0.63 if prediction.market == "BTTS" else 0.65
-        if probability < probability_floor:
-            codes.append("probability")
-        if prediction.edge is None or float(prediction.edge) < 0.06:
-            codes.append("edge")
-        if prediction.expected_value is None or float(prediction.expected_value) < 0.08:
-            codes.append("ev")
-        if float(prediction.score) < 80.0:
-            codes.append("score")
-        return codes
-
-    @classmethod
-    def _rejection_reason(cls, prediction: Prediction) -> str:
-        labels = {
-            **cls.REJECTION_LABELS,
-            "insufficient_data_quality": "Calidad de datos insuficiente",
-            "insufficient_home_venue_sample": "Poca muestra local",
-            "insufficient_away_venue_sample": "Poca muestra visitante",
-            "missing_odds": "Sin cuota de mercado",
-            "probability": "Probabilidad BTTS < 63%" if prediction.market == "BTTS" else "Probabilidad Over 2.5 < 65%",
+    def operational_summary(self, premium_picks: list[Prediction]) -> dict[str, Any]:
+        future = Prediction.objects.filter(
+            model_version=self.model_version,
+            fixture__kickoff__gte=timezone.now(),
+        )
+        averages = future.filter(tier="TIER_A").aggregate(
+            avg_ev=Avg("expected_value"),
+            avg_score=Avg("score"),
+        )
+        unique_fixtures = future.values("fixture_id").distinct().count()
+        return {
+            "fixtures_analyzed": unique_fixtures,
+            "premium_count": len(premium_picks),
+            "avg_ev_pct": round(float(averages["avg_ev"]) * 100, 1) if averages["avg_ev"] is not None else None,
+            "avg_score": round(float(averages["avg_score"]), 1) if averages["avg_score"] is not None else None,
+            "action": "BET" if premium_picks else "NO_BET",
         }
-        codes = cls._rejection_codes(prediction)
-        return ", ".join(labels.get(code, code) for code in codes) if codes else "No cumple todos los filtros Premium"
 
-    def _future_non_premium_qs(self):
-        return (
+    @staticmethod
+    def _rejection_reason(prediction: Prediction) -> str:
+        reasons = prediction.reasons or {}
+        failures = reasons.get("v8_gate_failures") or []
+        if failures:
+            labels = {
+                "insufficient_data_quality": "Calidad de datos insuficiente",
+                "insufficient_home_venue_sample": "Poca muestra local",
+                "insufficient_away_venue_sample": "Poca muestra visitante",
+            }
+            return ", ".join(labels.get(item, item) for item in failures)
+        if prediction.market_odds is None:
+            return "Sin cuota de mercado"
+        if prediction.market == "BTTS" and float(prediction.probability) < 0.63:
+            return "Probabilidad BTTS < 63%"
+        if prediction.market == "OVER_2_5" and float(prediction.probability) < 0.65:
+            return "Probabilidad Over 2.5 < 65%"
+        if prediction.edge is None or float(prediction.edge) < 0.06:
+            return "Edge < 6%"
+        if prediction.expected_value is None or float(prediction.expected_value) < 0.08:
+            return "EV < 8%"
+        if float(prediction.score) < 80.0:
+            return "Score < 80"
+        return "No cumple todos los filtros Premium"
+
+    def near_premium(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        qs = (
             Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team")
             .filter(
                 model_version=self.model_version,
                 fixture__kickoff__gte=timezone.now(),
             )
             .exclude(tier="TIER_A")
+            .order_by("-score", "-expected_value", "fixture__kickoff")[:limit]
         )
-
-    def near_premium(self, *, limit: int = 8) -> list[dict[str, Any]]:
-        qs = self._future_non_premium_qs().order_by("-score", "-expected_value", "fixture__kickoff")[:limit]
-        return [
-            {
-                "prediction": pred,
-                "reason": self._rejection_reason(pred),
-            }
-            for pred in qs
-        ]
+        return [{"prediction": pred, "reason": self._rejection_reason(pred)} for pred in qs]
 
     def rejection_summary(self) -> list[dict[str, Any]]:
-        counts: Counter[str] = Counter()
-        total = 0
-        for prediction in self._future_non_premium_qs().iterator(chunk_size=1000):
-            total += 1
-            counts.update(set(self._rejection_codes(prediction)))
-        rows = [
-            {"code": code, "label": self.REJECTION_LABELS.get(code, code), "count": count}
-            for code, count in counts.most_common()
+        rows = self.near_premium(limit=200)
+        counts: dict[str, int] = {}
+        for row in rows:
+            reason = row["reason"]
+            for part in [item.strip() for item in reason.split(",") if item.strip()]:
+                counts[part] = counts.get(part, 0) + 1
+        return [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
         ]
-        if total:
-            for row in rows:
-                row["pct"] = round(row["count"] / total * 100, 1)
-        return rows
 
     def recent_results(self, *, limit: int = 12) -> list[PredictionOutcome]:
         return list(
@@ -158,44 +145,34 @@ class DashboardService:
         )
 
     def market_performance(self) -> list[dict[str, Any]]:
-        summaries = LearningAnalyticsService().report(
-            model_version=self.model_version,
-            premium_only=True,
-        )
+        summaries = LearningAnalyticsService().report(model_version=self.model_version, premium_only=True)
         rows: list[dict[str, Any]] = []
         for item in summaries:
             if not item.scope.startswith("market:"):
                 continue
-            rows.append(
-                {
-                    "market": item.scope.split(":", 1)[1],
-                    "sample_size": item.sample_size,
-                    "win_rate_pct": round(item.win_rate * 100, 1) if item.win_rate is not None else None,
-                    "roi_pct": round(item.roi * 100, 1) if item.roi is not None else None,
-                    "profit_units": item.total_profit_units,
-                }
-            )
+            rows.append({
+                "market": item.scope.split(":", 1)[1],
+                "sample_size": item.sample_size,
+                "win_rate_pct": round(item.win_rate * 100, 1) if item.win_rate is not None else None,
+                "roi_pct": round(item.roi * 100, 1) if item.roi is not None else None,
+                "profit_units": item.total_profit_units,
+            })
         return sorted(rows, key=lambda row: row["sample_size"], reverse=True)
 
     def rule_performance(self, *, limit: int = 8) -> list[dict[str, Any]]:
-        summaries = LearningAnalyticsService().report(
-            model_version=self.model_version,
-            premium_only=True,
-        )
+        summaries = LearningAnalyticsService().report(model_version=self.model_version, premium_only=True)
         rows: list[dict[str, Any]] = []
         for item in summaries:
             if not item.scope.startswith("rule:"):
                 continue
-            rows.append(
-                {
-                    "rule": item.scope.split(":", 1)[1].replace("_", " ").title(),
-                    "scope": item.scope,
-                    "sample_size": item.sample_size,
-                    "win_rate_pct": round(item.win_rate * 100, 1) if item.win_rate is not None else None,
-                    "roi_pct": round(item.roi * 100, 1) if item.roi is not None else None,
-                    "profit_units": item.total_profit_units,
-                }
-            )
+            rows.append({
+                "rule": item.scope.split(":", 1)[1].replace("_", " ").title(),
+                "scope": item.scope,
+                "sample_size": item.sample_size,
+                "win_rate_pct": round(item.win_rate * 100, 1) if item.win_rate is not None else None,
+                "roi_pct": round(item.roi * 100, 1) if item.roi is not None else None,
+                "profit_units": item.total_profit_units,
+            })
         rows.sort(key=lambda row: (row["sample_size"], row["profit_units"]), reverse=True)
         return rows[:limit]
 
@@ -220,15 +197,24 @@ class DashboardService:
         }
 
     def build(self) -> dict[str, Any]:
+        picks = self.premium_picks()
         return {
             "model_version": self.model_version,
             "metrics": self.metrics().to_dict(),
-            "premium_picks": self.premium_picks(),
-            "near_premium": self.near_premium(),
-            "rejection_summary": self.rejection_summary(),
+            "premium_picks": picks,
+            "operational": self.operational_summary(picks),
             "recent_results": self.recent_results(),
             "market_performance": self.market_performance(),
             "rule_performance": self.rule_performance(),
+            "pipeline": self.pipeline_status(),
+            "generated_at": timezone.now(),
+        }
+
+    def build_developer(self) -> dict[str, Any]:
+        return {
+            "model_version": self.model_version,
+            "near_premium": self.near_premium(),
+            "rejection_summary": self.rejection_summary(),
             "pipeline": self.pipeline_status(),
             "generated_at": timezone.now(),
         }
