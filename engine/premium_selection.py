@@ -7,6 +7,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
+from .competition_quality import classify_competition
 from .models import DailyPremiumSelection, Prediction
 from .score_v8 import V8_MODEL_VERSION
 
@@ -33,6 +34,8 @@ class DailyPremiumSelector:
 
     Raw V8 predictions are never rewritten. Operational selections live in
     DailyPremiumSelection so backtesting evidence remains untouched.
+    Sprint 6.2 also rejects friendlies/exhibitions and ranks official
+    competitions by quality.
     """
 
     def __init__(self, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
@@ -50,6 +53,10 @@ class DailyPremiumSelector:
 
     @classmethod
     def _tier_for(cls, prediction: Prediction) -> str | None:
+        competition_quality = classify_competition(prediction.fixture)
+        if competition_quality.excluded:
+            return None
+
         reasons = prediction.reasons or {}
         if not reasons.get("v8_gates_passed", False):
             return None
@@ -81,6 +88,7 @@ class DailyPremiumSelector:
 
     @classmethod
     def _rank_score(cls, prediction: Prediction) -> tuple[float, dict]:
+        competition_quality = classify_competition(prediction.fixture)
         score_component = max(0.0, min(float(prediction.score), 100.0))
         ev = max(0.0, float(prediction.expected_value or 0))
         edge = max(0.0, float(prediction.edge or 0))
@@ -88,13 +96,15 @@ class DailyPremiumSelector:
         edge_component = min(edge / 0.15, 1.0) * 100.0
         data_quality = float((prediction.reasons or {}).get("data_quality_score") or 0.0)
         quote_quality = cls._quote_quality(prediction)
-        quality_component = 0.70 * data_quality + 0.30 * quote_quality
+        evidence_quality_component = 0.70 * data_quality + 0.30 * quote_quality
+        competition_component = competition_quality.quality_score
 
         composite = (
-            0.40 * score_component
+            0.35 * score_component
             + 0.25 * ev_component
             + 0.20 * edge_component
-            + 0.15 * quality_component
+            + 0.10 * evidence_quality_component
+            + 0.10 * competition_component
         )
         rationale = {
             "score_component": round(score_component, 2),
@@ -102,12 +112,16 @@ class DailyPremiumSelector:
             "edge_component": round(edge_component, 2),
             "data_quality": round(data_quality, 2),
             "quote_quality": round(quote_quality, 2),
-            "quality_component": round(quality_component, 2),
+            "evidence_quality_component": round(evidence_quality_component, 2),
+            "competition_quality_level": competition_quality.level,
+            "competition_quality_label": competition_quality.label,
+            "competition_quality_score": competition_quality.quality_score,
+            "competition_quality_reason": competition_quality.reason,
             "probability": float(prediction.probability),
             "market_odds": float(prediction.market_odds) if prediction.market_odds is not None else None,
             "edge": float(prediction.edge) if prediction.edge is not None else None,
             "expected_value": float(prediction.expected_value) if prediction.expected_value is not None else None,
-            "formula": "0.40*score + 0.25*ev + 0.20*edge + 0.15*quality",
+            "formula": "0.35*score + 0.25*ev + 0.20*edge + 0.10*evidence_quality + 0.10*competition_quality",
         }
         return round(composite, 2), rationale
 
@@ -116,7 +130,12 @@ class DailyPremiumSelector:
         start, end = self._bounds(target_date)
         future_start = max(start, timezone.now())
         candidates = list(
-            Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team")
+            Prediction.objects.select_related(
+                "fixture",
+                "fixture__home_team",
+                "fixture__away_team",
+                "fixture__competition_ref",
+            )
             .filter(
                 model_version=self.model_version,
                 fixture__kickoff__gte=future_start,
@@ -129,6 +148,9 @@ class DailyPremiumSelector:
 
         ranked = []
         for prediction in candidates:
+            competition_quality = classify_competition(prediction.fixture)
+            if competition_quality.excluded:
+                continue
             tier = self._tier_for(prediction)
             if tier is None:
                 continue
@@ -184,6 +206,7 @@ class DailyPremiumSelector:
                 "prediction__fixture",
                 "prediction__fixture__home_team",
                 "prediction__fixture__away_team",
+                "prediction__fixture__competition_ref",
             )
             .filter(target_date=target_date, model_version=self.model_version)
             .order_by("rank")
