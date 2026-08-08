@@ -27,12 +27,13 @@ class DailyPipeline:
     """Production orchestrator for the football-value workflow.
 
     Modes:
-    - full: INGEST -> SCORE_V8 -> SETTLE -> LEARNING
-    - morning: INGEST -> SCORE_V8
+    - full: detailed INGEST -> SCORE_V8 -> SETTLE -> LEARNING
+    - morning: fast fixture INGEST -> SCORE_V8
     - settlement: SETTLE -> LEARNING
 
-    Stages intentionally reuse existing management commands so business logic
-    remains centralized, while every execution is observable and retryable.
+    The morning pass intentionally avoids per-fixture lineup/statistics calls.
+    Detailed context is collected by later refreshes when it is actually
+    available and useful.
     """
 
     MODES = {"full", "morning", "settlement"}
@@ -52,11 +53,16 @@ class DailyPipeline:
         call_command(name, stdout=out, **options)
         return out.getvalue()
 
-    def _ingest(self, target_date: date) -> StageResult:
-        self._capture_command("ingest_daily", target_date=target_date.isoformat())
+    def _ingest(self, target_date: date, *, fixtures_only: bool = False) -> StageResult:
+        self._capture_command(
+            "ingest_daily",
+            target_date=target_date.isoformat(),
+            fixtures_only=fixtures_only,
+        )
         start, end = self._date_bounds(target_date)
         count = Fixture.objects.filter(kickoff__gte=start, kickoff__lt=end).count()
-        return StageResult(count, f"{count} fixtures stored", {"fixtures": count})
+        mode = "fast" if fixtures_only else "detailed"
+        return StageResult(count, f"{count} fixtures stored ({mode} ingestion)", {"fixtures": count, "ingestion_mode": mode})
 
     def _score(self, target_date: date) -> StageResult:
         self._capture_command("score_v8", target_date=target_date.isoformat())
@@ -92,10 +98,12 @@ class DailyPipeline:
         stage = PipelineStageRun.objects.create(pipeline=pipeline, name=name)
         started = timezone.now()
         last_error = None
+        print(f"[pipeline #{pipeline.id}] START {name}", flush=True)
 
         for attempt in range(1, self.max_attempts + 1):
             stage.attempt_count = attempt
             stage.save(update_fields=["attempt_count"])
+            print(f"[pipeline #{pipeline.id}] {name} attempt {attempt}/{self.max_attempts}", flush=True)
             try:
                 result = fn()
                 finished = timezone.now()
@@ -106,9 +114,14 @@ class DailyPipeline:
                 stage.message = result.message[:255]
                 stage.details = result.details or {}
                 stage.save()
+                print(
+                    f"[pipeline #{pipeline.id}] DONE {name}: {result.message} ({stage.duration_seconds}s)",
+                    flush=True,
+                )
                 return stage
             except Exception as exc:
                 last_error = exc
+                print(f"[pipeline #{pipeline.id}] ERROR {name} attempt {attempt}: {exc}", flush=True)
                 if attempt < self.max_attempts and self.retry_delay_seconds:
                     time_module.sleep(self.retry_delay_seconds)
 
@@ -119,6 +132,7 @@ class DailyPipeline:
         stage.message = str(last_error)[:255] if last_error else "unknown stage error"
         stage.details = {"error_type": type(last_error).__name__ if last_error else "UnknownError"}
         stage.save()
+        print(f"[pipeline #{pipeline.id}] FAILED {name}: {stage.message}", flush=True)
         return stage
 
     @transaction.atomic
@@ -131,7 +145,7 @@ class DailyPipeline:
     def _stages_for(self, target_date: date, mode: str):
         if mode == "morning":
             return [
-                ("INGEST", lambda: self._ingest(target_date), True),
+                ("INGEST", lambda: self._ingest(target_date, fixtures_only=True), True),
                 ("SCORE_V8", lambda: self._score(target_date), True),
             ]
         if mode == "settlement":
@@ -140,7 +154,7 @@ class DailyPipeline:
                 ("LEARNING", lambda: self._learning(target_date), False),
             ]
         return [
-            ("INGEST", lambda: self._ingest(target_date), True),
+            ("INGEST", lambda: self._ingest(target_date, fixtures_only=False), True),
             ("SCORE_V8", lambda: self._score(target_date), True),
             ("SETTLE", lambda: self._settle(target_date), False),
             ("LEARNING", lambda: self._learning(target_date), False),
@@ -154,6 +168,7 @@ class DailyPipeline:
         pipeline = self._create_run(target_date, mode)
         started = timezone.now()
         stages = self._stages_for(target_date, mode)
+        print(f"[pipeline #{pipeline.id}] mode={mode} date={target_date} stages={len(stages)}", flush=True)
 
         required_failed = False
         ingest_failed = False
@@ -171,6 +186,7 @@ class DailyPipeline:
                     details={"dependency": "INGEST"},
                 )
                 warning_count += 1
+                print(f"[pipeline #{pipeline.id}] SKIP SCORE_V8 because INGEST failed", flush=True)
                 continue
 
             stage = self._run_stage(pipeline, name, fn, required=required)
@@ -211,4 +227,9 @@ class DailyPipeline:
         else:
             pipeline.status = PipelineRun.STATUS_SUCCESS
         pipeline.save()
+        print(
+            f"[pipeline #{pipeline.id}] FINISH status={pipeline.status} fixtures={fixtures_count} "
+            f"predictions={predictions_count} premium={premium_count} duration={pipeline.duration_seconds}s",
+            flush=True,
+        )
         return pipeline
