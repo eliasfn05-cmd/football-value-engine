@@ -44,6 +44,34 @@
     <section class="panel">
       <div class="panel-head">
         <div>
+          <p class="eyebrow">AUTOMATIZACIÓN</p>
+          <h2>Estado del Pipeline</h2>
+        </div>
+        {% if pipeline %}<span class="count-badge">#{{ pipeline.id }}</span>{% endif %}
+      </div>
+      {% if pipeline %}
+      <div class="metrics-grid">
+        <article class="metric-card"><span>Estado</span><strong>{{ pipeline.status }}</strong><small>{{ pipeline.target_date|date:"d/m/Y" }}</small></article>
+        <article class="metric-card"><span>Duración</span><strong>{{ pipeline.duration_seconds }} s</strong><small>{{ pipeline.warning_count }} warnings · {{ pipeline.error_count }} errores</small></article>
+        <article class="metric-card"><span>Datos</span><strong>{{ pipeline.fixtures_count }}</strong><small>fixtures · {{ pipeline.predictions_count }} predicciones</small></article>
+        <article class="metric-card"><span>Premium</span><strong>{{ pipeline.premium_count }}</strong><small>{{ pipeline.settled_count }} picks liquidados</small></article>
+      </div>
+      <div class="mini-list">
+        {% for stage in pipeline.stages %}
+        <div class="mini-row">
+          <div><strong>{{ stage.name }}</strong><small>{{ stage.message|default:"Sin detalle" }}</small></div>
+          <div class="right"><strong>{{ stage.status }}</strong><small>{{ stage.attempt_count }} intento(s) · {{ stage.duration_seconds }} s</small></div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="empty">El pipeline todavía no se ha ejecutado. Al correr daily_pipeline aparecerá aquí su estado.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
           <p class="eyebrow">SELECCIÓN ACTUAL</p>
           <h2>Picks Premium</h2>
         </div>
