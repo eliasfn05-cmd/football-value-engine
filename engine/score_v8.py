@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from django.conf import settings
@@ -60,8 +60,6 @@ class ScoreEngineV8:
         home_factor, home_lineup_state = self._lineup_factor(features.home_lineup_continuity)
         away_factor, away_lineup_state = self._lineup_factor(features.away_lineup_continuity)
 
-        # xG is kept transparent: until a persisted xG feed is available, the
-        # venue-specific observed scoring values are the proxy used by the core.
         home_profile = TeamProfile(
             goals_for=home.goals_for,
             goals_against=home.goals_against,
@@ -165,18 +163,20 @@ class ScoreEngineV8:
     def evaluate_and_persist(self, fixture: Fixture, features: FeatureVector | None = None) -> dict[str, Any]:
         result = self.evaluate(fixture, features)
         for evaluation in result.values():
-            Prediction.objects.create(
+            Prediction.objects.update_or_create(
                 fixture=fixture,
                 model_version=V8_MODEL_VERSION,
                 market=evaluation["market"],
                 selection=evaluation["selection"],
-                probability=evaluation["probability"],
-                fair_odds=evaluation["fair_odds"],
-                market_odds=evaluation["market_odds"],
-                edge=evaluation["edge"],
-                expected_value=evaluation["expected_value"],
-                score=evaluation["score"],
-                tier=evaluation["tier"],
-                reasons=evaluation["reasons"],
+                defaults={
+                    "probability": evaluation["probability"],
+                    "fair_odds": evaluation["fair_odds"],
+                    "market_odds": evaluation["market_odds"],
+                    "edge": evaluation["edge"],
+                    "expected_value": evaluation["expected_value"],
+                    "score": evaluation["score"],
+                    "tier": evaluation["tier"],
+                    "reasons": evaluation["reasons"],
+                },
             )
         return result
