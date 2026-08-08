@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -65,3 +66,22 @@ class PremiumEnrichmentTests(TestCase):
 
         gaps = Command._teams_missing_venue_history([self.target])
         self.assertEqual(gaps, [])
+
+    def test_parallel_history_fetch_filters_rows_at_or_after_target_kickoff(self):
+        past = self.kickoff - timedelta(days=2)
+        future = self.kickoff + timedelta(hours=1)
+        payload = [
+            {"fixture": {"id": 101, "date": past.isoformat()}},
+            {"fixture": {"id": 102, "date": self.kickoff.isoformat()}},
+            {"fixture": {"id": 103, "date": future.isoformat()}},
+        ]
+
+        with patch("scanner.management.commands.enrich_candidates.APIFootballProvider") as provider_cls:
+            provider_cls.return_value.team_recent_fixtures.return_value = payload
+            result = Command._fetch_team_history(self.home.external_id, self.kickoff)
+
+        self.assertEqual([row["fixture"]["id"] for row in result], [101])
+        provider_cls.return_value.team_recent_fixtures.assert_called_once_with(
+            self.home.external_id,
+            last=20,
+        )
