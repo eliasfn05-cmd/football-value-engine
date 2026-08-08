@@ -101,6 +101,39 @@
       </div>
     </section>
 
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">DIAGNÓSTICO</p>
+          <h2>Candidatos cercanos a Premium</h2>
+        </div>
+        <span class="count-badge">{{ near_premium|length }}</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>Edge</th><th>EV</th><th>Score</th><th>Motivo</th></tr>
+          </thead>
+          <tbody>
+            {% for row in near_premium %}
+            <tr>
+              <td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td>
+              <td><span class="market-pill">{{ row.prediction.market }}</span></td>
+              <td>{{ row.prediction.probability|floatformat:3 }}</td>
+              <td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td>
+              <td>{% if row.prediction.edge != None %}{{ row.prediction.edge|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td>{% if row.prediction.expected_value != None %}{{ row.prediction.expected_value|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td><strong>{{ row.prediction.score|floatformat:1 }}</strong></td>
+              <td>{{ row.reason }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="8" class="empty">No hay candidatos futuros para diagnosticar.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="split-grid">
       <article class="panel">
         <div class="panel-head"><div><p class="eyebrow">BACKTESTING</p><h2>Por mercado</h2></div></div>
