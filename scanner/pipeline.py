@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import io
+import sys
 import time as time_module
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -24,17 +24,7 @@ class StageResult:
 
 
 class DailyPipeline:
-    """Production orchestrator for the football-value workflow.
-
-    Modes:
-    - full: detailed INGEST -> SCORE_V8 -> SETTLE -> LEARNING
-    - morning: fast fixture INGEST -> SCORE_V8
-    - settlement: SETTLE -> LEARNING
-
-    The morning pass intentionally avoids per-fixture lineup/statistics calls.
-    Detailed context is collected by later refreshes when it is actually
-    available and useful.
-    """
+    """Production orchestrator for the football-value workflow."""
 
     MODES = {"full", "morning", "settlement"}
 
@@ -48,13 +38,13 @@ class DailyPipeline:
         return start, start + timedelta(days=1)
 
     @staticmethod
-    def _capture_command(name: str, **options) -> str:
-        out = io.StringIO()
-        call_command(name, stdout=out, **options)
-        return out.getvalue()
+    def _run_command(name: str, **options) -> None:
+        # Stream nested management-command output directly to the parent
+        # process so GitHub Actions shows live progress instead of buffering it.
+        call_command(name, stdout=sys.stdout, stderr=sys.stderr, **options)
 
     def _ingest(self, target_date: date, *, fixtures_only: bool = False) -> StageResult:
-        self._capture_command(
+        self._run_command(
             "ingest_daily",
             target_date=target_date.isoformat(),
             fixtures_only=fixtures_only,
@@ -65,7 +55,7 @@ class DailyPipeline:
         return StageResult(count, f"{count} fixtures stored ({mode} ingestion)", {"fixtures": count, "ingestion_mode": mode})
 
     def _score(self, target_date: date) -> StageResult:
-        self._capture_command("score_v8", target_date=target_date.isoformat())
+        self._run_command("score_v8", target_date=target_date.isoformat())
         start, end = self._date_bounds(target_date)
         qs = Prediction.objects.filter(
             model_version=V8_MODEL_VERSION,
@@ -78,7 +68,7 @@ class DailyPipeline:
 
     def _settle(self, target_date: date) -> StageResult:
         before = PredictionOutcome.objects.filter(prediction__model_version=V8_MODEL_VERSION).count()
-        self._capture_command("settle_predictions", model_version=V8_MODEL_VERSION)
+        self._run_command("settle_predictions", model_version=V8_MODEL_VERSION)
         after = PredictionOutcome.objects.filter(prediction__model_version=V8_MODEL_VERSION).count()
         processed = max(0, after - before)
         total_settled = PredictionOutcome.objects.filter(
@@ -87,7 +77,7 @@ class DailyPipeline:
         return StageResult(processed, f"{processed} newly settled; {total_settled} total", {"new": processed, "total": total_settled})
 
     def _learning(self, target_date: date) -> StageResult:
-        self._capture_command("learning_report", model_version=V8_MODEL_VERSION, premium_only=True)
+        self._run_command("learning_report", model_version=V8_MODEL_VERSION, premium_only=True)
         settled = PredictionOutcome.objects.filter(
             prediction__model_version=V8_MODEL_VERSION,
             prediction__tier="TIER_A",
@@ -114,10 +104,7 @@ class DailyPipeline:
                 stage.message = result.message[:255]
                 stage.details = result.details or {}
                 stage.save()
-                print(
-                    f"[pipeline #{pipeline.id}] DONE {name}: {result.message} ({stage.duration_seconds}s)",
-                    flush=True,
-                )
+                print(f"[pipeline #{pipeline.id}] DONE {name}: {result.message} ({stage.duration_seconds}s)", flush=True)
                 return stage
             except Exception as exc:
                 last_error = exc
