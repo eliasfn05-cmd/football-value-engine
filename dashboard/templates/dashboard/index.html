@@ -15,8 +15,17 @@
         <h1>Premium Picks</h1>
         <p class="subtitle">Sprint 6 · Ranking diario · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
       </div>
-      <div class="status-pill"><span></span> Producción</div>
+      <div class="hero-actions">
+        <form id="premium-generator-form">{% csrf_token %}
+          <button id="generate-premium" class="generate-button" type="button" {% if not pipeline_trigger_configured %}disabled{% endif %}>Generar Picks Premium</button>
+        </form>
+        <div class="status-pill"><span></span> Producción</div>
+      </div>
     </header>
+
+    <div id="generation-status" class="generation-status {% if not pipeline_trigger_configured %}generation-warning{% endif %}">
+      {% if pipeline_trigger_configured %}Listo para generar el Top Premium del día.{% else %}Configuración pendiente: agrega GITHUB_ACTIONS_TOKEN y PIPELINE_TRIGGER_PIN en Render.{% endif %}
+    </div>
 
     <section class="metrics-grid operational-grid">
       <article class="metric-card"><span>Partidos analizados</span><strong>{{ operational.fixtures_analyzed }}</strong><small>Próximos eventos evaluados</small></article>
@@ -32,8 +41,7 @@
         <button id="copy-picks" class="action-button" type="button">Copiar Picks</button>
       </div>
       <div class="premium-grid" id="premium-picks">
-        {% for row in premium_picks %}
-        {% with pick=row.prediction %}
+        {% for row in premium_picks %}{% with pick=row.prediction %}
         <article class="premium-card" data-copy="{{ row.rank }}. {{ pick.fixture.home_team.name }} vs {{ pick.fixture.away_team.name }} | Premium {{ row.premium_tier }} | {{ pick.market }} {{ pick.selection }} | Cuota {% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %} | Prob. {{ pick.probability|floatformat:3 }} | EV {% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %} | Rank {{ row.premium_rank_score|floatformat:1 }}">
           <div class="premium-card-top"><span class="premium-label">PREMIUM {{ row.premium_tier }} · #{{ row.rank }}</span><span class="score-badge">Rank {{ row.premium_rank_score|floatformat:1 }}</span></div>
           <h3>{{ pick.fixture.home_team.name }} <span>vs</span> {{ pick.fixture.away_team.name }}</h3>
@@ -47,8 +55,7 @@
           </div>
           <div class="kickoff">Inicio: {{ pick.fixture.kickoff|date:"d/m/Y H:i" }}</div>
         </article>
-        {% endwith %}
-        {% endfor %}
+        {% endwith %}{% endfor %}
       </div>
     </section>
     {% else %}
@@ -70,24 +77,64 @@
       <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Pick</th><th>Marcador</th><th>Cuota</th><th>Resultado</th><th>P/L</th></tr></thead><tbody>{% for row in recent_results %}<tr><td>{{ row.prediction.fixture.home_team.name }} vs {{ row.prediction.fixture.away_team.name }}</td><td>{{ row.prediction.market }} · {{ row.prediction.selection }}</td><td>{{ row.home_goals }}-{{ row.away_goals }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td><span class="result result-{{ row.result|lower }}">{{ row.result }}</span></td><td><strong>{{ row.profit_units|floatformat:2 }} u</strong></td></tr>{% empty %}<tr><td colspan="6" class="empty">Aún no hay picks Sprint 6 liquidados.</td></tr>{% endfor %}</tbody></table></div>
     </section>
 
-    <footer>Football Value Engine · Ranking Sprint 6: máximo 3 picks, un mercado por partido y piso mínimo de calidad.</footer>
+    <footer>Football Value Engine · Ranking Sprint 6: máximo 3 picks, un mercado por partido y partidos oficiales únicamente.</footer>
   </main>
 
   <script>
     const copyButton = document.getElementById('copy-picks');
-    if (copyButton) {
-      copyButton.addEventListener('click', async () => {
-        const rows = [...document.querySelectorAll('.premium-card')].map(card => card.dataset.copy);
-        const text = `FOOTBALL VALUE ENGINE · PICKS PREMIUM\n\n${rows.join('\n\n')}`;
-        try {
-          await navigator.clipboard.writeText(text);
-          copyButton.textContent = 'Copiado ✓';
-          setTimeout(() => copyButton.textContent = 'Copiar Picks', 1800);
-        } catch (_) {
-          copyButton.textContent = 'No se pudo copiar';
+    if (copyButton) copyButton.addEventListener('click', async () => {
+      const rows = [...document.querySelectorAll('.premium-card')].map(card => card.dataset.copy);
+      try { await navigator.clipboard.writeText(`FOOTBALL VALUE ENGINE · PICKS PREMIUM\n\n${rows.join('\n\n')}`); copyButton.textContent='Copiado ✓'; setTimeout(()=>copyButton.textContent='Copiar Picks',1800); }
+      catch (_) { copyButton.textContent='No se pudo copiar'; }
+    });
+
+    const generateButton = document.getElementById('generate-premium');
+    const statusBox = document.getElementById('generation-status');
+    const csrfToken = document.querySelector('#premium-generator-form input[name="csrfmiddlewaretoken"]')?.value;
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function pollGeneration(baselineId, alreadyRunning=false) {
+      const started = Date.now();
+      while (Date.now() - started < 15 * 60 * 1000) {
+        await sleep(4000);
+        const response = await fetch('{% url "premium-generation-status" %}', {cache:'no-store'});
+        const data = await response.json();
+        const run = data.run;
+        if (!run) { statusBox.textContent='En cola en GitHub Actions…'; continue; }
+        const isNewRun = alreadyRunning ? run.id >= baselineId : run.id > baselineId;
+        if (!isNewRun) { statusBox.textContent='En cola en GitHub Actions…'; continue; }
+        if (run.status === 'RUNNING') { statusBox.textContent='Generando Picks Premium…'; continue; }
+        if (run.status === 'SUCCESS' || run.status === 'PARTIAL') {
+          statusBox.textContent=`Completado · ${data.premium_count} Pick(s) Premium. Actualizando página…`;
+          await sleep(1200); window.location.reload(); return;
         }
-      });
+        if (run.status === 'FAILED') { statusBox.textContent='La generación terminó con error. Revisa /developer/.'; generateButton.disabled=false; return; }
+      }
+      statusBox.textContent='La generación sigue tardando más de lo esperado. Puedes actualizar la página más tarde.';
+      generateButton.disabled=false;
     }
+
+    if (generateButton) generateButton.addEventListener('click', async () => {
+      const pin = window.prompt('Ingresa el PIN operativo para generar los Picks Premium:');
+      if (!pin) return;
+      generateButton.disabled=true;
+      generateButton.textContent='Generando…';
+      statusBox.textContent='Enviando solicitud segura…';
+      try {
+        const response = await fetch('{% url "generate-premium-picks" %}', {
+          method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},
+          body:JSON.stringify({pin})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.message || 'No se pudo iniciar el pipeline.');
+        statusBox.textContent=data.message;
+        await pollGeneration(Number(data.baseline_run_id || 0), Boolean(data.already_running));
+      } catch (error) {
+        statusBox.textContent=error.message;
+        generateButton.disabled=false;
+        generateButton.textContent='Generar Picks Premium';
+      }
+    });
   </script>
 </body>
 </html>
