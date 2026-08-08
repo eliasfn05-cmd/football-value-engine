@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import date
-from typing import Iterable
 
 
 class SportsDataProvider(ABC):
     """Contract for football data providers.
 
-    Implementations must return provider-native dictionaries. The scanner layer
-    is responsible for normalizing them into engine/domain structures.
+    Implementations return provider-native dictionaries. The scanner layer
+    normalizes them into engine/domain structures.
     """
 
     @abstractmethod
@@ -29,4 +28,8 @@ class SportsDataProvider(ABC):
         raise NotImplementedError
 
     def fixture_lineups(self, fixture_id: int | str) -> list[dict]:
+        return []
+
+    def team_fixtures_between(self, team_id: int | str, start: date, end: date) -> list[dict]:
+        """Optional richer fixture window used by advanced contextual filters."""
         return []
