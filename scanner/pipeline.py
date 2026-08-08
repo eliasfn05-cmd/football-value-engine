@@ -11,7 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
-from engine.models import Fixture, Prediction
+from engine.models import DailyPremiumSelection, Fixture, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.models import PipelineRun, PipelineStageRun
 
@@ -28,8 +28,8 @@ class DailyPipeline:
 
     Modes:
     - morning: fast bulk fixture ingestion + first-pass V8 scoring.
-    - full: ingest + first score + selective enrichment + targeted future rescore + settlement + learning.
-    - refresh: enrich a small shortlist (history/odds/lineups/standings) + targeted future rescore.
+    - full: ingest + first score + selective enrichment + targeted future rescore + ranked Premium selection + settlement + learning.
+    - refresh: enrich a small shortlist + targeted future rescore + refresh ranked Premium selection.
     - settlement: settlement + learning only.
     - detailed: legacy/manual full-card enrichment; never scheduled normally.
     """
@@ -66,7 +66,7 @@ class DailyPipeline:
         )
         count = qs.count()
         premium = qs.filter(tier="TIER_A").count()
-        return StageResult(count, f"{count} predictions; {premium} premium", {"predictions": count, "premium": premium})
+        return StageResult(count, f"{count} predictions; {premium} raw tier-A", {"predictions": count, "raw_tier_a": premium})
 
     def _future_candidate_fixture_ids(self, target_date: date, *, limit: int = 30) -> list[int]:
         start, end = self._date_bounds(target_date)
@@ -104,12 +104,6 @@ class DailyPipeline:
         return StageResult(processed, f"{processed} future shortlisted fixtures enriched", {"candidates": processed})
 
     def _rescore_enriched(self, target_date: date) -> StageResult:
-        """Re-evaluate exactly the future shortlist after its evidence was enriched.
-
-        Fixture-level scoring uses FeatureEngineeringService, whose standing/odds/
-        lineup lookups are relative to that fixture. This avoids a whole-day batch
-        cutoff masking evidence captured during the enrichment stage.
-        """
         fixture_ids = self._future_candidate_fixture_ids(target_date, limit=30)
         fixtures = list(
             Fixture.objects.filter(id__in=fixture_ids)
@@ -134,9 +128,20 @@ class DailyPipeline:
         premium = future_qs.filter(tier="TIER_A").count()
         return StageResult(
             rescored,
-            f"{rescored} enriched future fixtures rescored; {premium} future premium",
-            {"rescored": rescored, "future_premium": premium},
+            f"{rescored} enriched future fixtures rescored; {premium} raw tier-A",
+            {"rescored": rescored, "raw_tier_a": premium},
         )
+
+    def _select_premium(self, target_date: date) -> StageResult:
+        self._run_command("select_premium", target_date=target_date.isoformat(), max_picks=3)
+        rows = DailyPremiumSelection.objects.filter(
+            target_date=target_date,
+            model_version=V8_MODEL_VERSION,
+        ).order_by("rank")
+        count = rows.count()
+        tiers = list(rows.values_list("premium_tier", flat=True))
+        message = f"{count} operational Premium picks selected" if count else "NO BET: 0 operational Premium picks"
+        return StageResult(count, message, {"selected": count, "tiers": tiers})
 
     def _settle(self, target_date: date) -> StageResult:
         before = PredictionOutcome.objects.filter(prediction__model_version=V8_MODEL_VERSION).count()
@@ -154,7 +159,7 @@ class DailyPipeline:
             prediction__model_version=V8_MODEL_VERSION,
             prediction__tier="TIER_A",
         ).exclude(result=PredictionOutcome.RESULT_PENDING).count()
-        return StageResult(settled, f"learning report refreshed from {settled} premium outcomes", {"premium_outcomes": settled})
+        return StageResult(settled, f"learning report refreshed from {settled} raw tier-A outcomes", {"premium_outcomes": settled})
 
     def _run_stage(self, pipeline: PipelineRun, name: str, fn: Callable[[], StageResult], *, required: bool) -> PipelineStageRun:
         stage = PipelineStageRun.objects.create(pipeline=pipeline, name=name)
@@ -206,6 +211,7 @@ class DailyPipeline:
             return [
                 ("ENRICH_CANDIDATES", lambda: self._enrich(target_date), False),
                 ("RESCORE_V8", lambda: self._rescore_enriched(target_date), True),
+                ("SELECT_PREMIUM", lambda: self._select_premium(target_date), True),
             ]
         if mode == "settlement":
             return [
@@ -216,6 +222,7 @@ class DailyPipeline:
             return [
                 ("INGEST", lambda: self._ingest(target_date, fixtures_only=False), True),
                 ("SCORE_V8", lambda: self._score(target_date), True),
+                ("SELECT_PREMIUM", lambda: self._select_premium(target_date), True),
                 ("SETTLE", lambda: self._settle(target_date), False),
                 ("LEARNING", lambda: self._learning(target_date), False),
             ]
@@ -224,6 +231,7 @@ class DailyPipeline:
             ("SCORE_V8", lambda: self._score(target_date), True),
             ("ENRICH_CANDIDATES", lambda: self._enrich(target_date), False),
             ("RESCORE_V8", lambda: self._rescore_enriched(target_date), True),
+            ("SELECT_PREMIUM", lambda: self._select_premium(target_date), True),
             ("SETTLE", lambda: self._settle(target_date), False),
             ("LEARNING", lambda: self._learning(target_date), False),
         ]
@@ -240,7 +248,7 @@ class DailyPipeline:
         ingest_failed = False
         warning_count = 0
         error_count = 0
-        dependent_on_ingest = {"SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8"}
+        dependent_on_ingest = {"SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8", "SELECT_PREMIUM"}
         for name, fn, required in stages:
             if name in dependent_on_ingest and ingest_failed:
                 PipelineStageRun.objects.create(
@@ -272,8 +280,10 @@ class DailyPipeline:
             fixture__kickoff__lt=end,
         )
         predictions_count = predictions.count()
-        future_start = max(start, timezone.now())
-        premium_count = predictions.filter(tier="TIER_A", fixture__kickoff__gte=future_start).count()
+        premium_count = DailyPremiumSelection.objects.filter(
+            target_date=target_date,
+            model_version=V8_MODEL_VERSION,
+        ).count()
         settled_count = PredictionOutcome.objects.filter(prediction__model_version=V8_MODEL_VERSION).exclude(
             result=PredictionOutcome.RESULT_PENDING
         ).count()
