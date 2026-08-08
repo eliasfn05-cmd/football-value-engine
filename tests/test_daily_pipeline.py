@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from scanner.models import PipelineRun, PipelineStageRun
+from scanner.models import PipelineRun, PipelineStageRun, PremiumGenerationJob
 from scanner.pipeline import DailyPipeline, StageResult
 
 
@@ -153,6 +153,32 @@ class DailyPipelineTests(TestCase):
         self.assertEqual(rescore_stage.status, PipelineStageRun.STATUS_WARNING)
         self.assertEqual(selection.status, PipelineStageRun.STATUS_WARNING)
         self.assertIn("ingestion failed", scoring.message)
+
+    def test_generation_job_is_claimed_and_completed_by_pipeline(self):
+        job = PremiumGenerationJob.objects.create(
+            target_date=date(2026, 8, 8),
+            status=PremiumGenerationJob.STATUS_DISPATCHED,
+            mode="full",
+        )
+        pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
+        with (
+            patch.object(pipeline, "_ingest", return_value=StageResult(1, "ingested")),
+            patch.object(pipeline, "_score", return_value=StageResult(2, "scored")),
+            patch.object(pipeline, "_enrich", return_value=StageResult(1, "enriched")),
+            patch.object(pipeline, "_rescore_enriched", return_value=StageResult(1, "rescored")),
+            patch.object(pipeline, "_select_premium", return_value=StageResult(0, "NO BET")),
+            patch.object(pipeline, "_settle", return_value=StageResult(0, "settled")),
+            patch.object(pipeline, "_learning", return_value=StageResult(0, "learned")),
+        ):
+            run = pipeline.run(date(2026, 8, 8), generation_job_id=job.id)
+
+        job.refresh_from_db()
+        self.assertEqual(job.pipeline_id, run.id)
+        self.assertEqual(job.status, PremiumGenerationJob.STATUS_SUCCESS)
+        self.assertEqual(job.current_stage, "COMPLETE")
+        self.assertEqual(job.progress_pct, 100)
+        self.assertIsNotNone(job.started_at)
+        self.assertIsNotNone(job.finished_at)
 
     def test_rejects_unknown_mode(self):
         with self.assertRaises(ValueError):
