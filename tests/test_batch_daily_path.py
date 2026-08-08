@@ -1,11 +1,13 @@
 from datetime import date, datetime, timedelta, timezone as dt_timezone
+from decimal import Decimal
 
 from django.test import TestCase
 
 from engine.batch_features import BatchFeatureEngineeringService
 from engine.features import FeatureEngineeringService
-from engine.models import Fixture, Team
+from engine.models import Fixture, Prediction, Team
 from scanner.ingestion import DataIngestionService
+from scanner.management.commands.score_v8 import Command as ScoreV8Command
 
 
 class FakeProvider:
@@ -96,3 +98,30 @@ class BatchDailyPathTests(TestCase):
 
         self.assertEqual(fast.home_profile, single.home_profile)
         self.assertEqual(fast.away_profile, single.away_profile)
+
+    def test_prediction_change_detection_uses_database_decimal_precision(self):
+        evaluation = {
+            "probability": 0.61234549,
+            "fair_odds": 1.63349,
+            "market_odds": 1.91049,
+            "edge": 0.088884,
+            "expected_value": 0.169994,
+            "score": 82.126,
+            "tier": "TIER_A",
+            "reasons": {"v8_gate_failures": []},
+        }
+        defaults = ScoreV8Command._prediction_defaults(evaluation)
+        pred = Prediction(
+            probability=Decimal("0.61235"),
+            fair_odds=Decimal("1.633"),
+            market_odds=Decimal("1.910"),
+            edge=Decimal("0.08888"),
+            expected_value=Decimal("0.16999"),
+            score=Decimal("82.13"),
+            tier="TIER_A",
+            reasons={"v8_gate_failures": []},
+        )
+
+        self.assertFalse(ScoreV8Command._prediction_changed(pred, defaults))
+        pred.score = Decimal("82.12")
+        self.assertTrue(ScoreV8Command._prediction_changed(pred, defaults))
