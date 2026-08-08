@@ -19,6 +19,12 @@ class CompetitionQuality:
 FRIENDLY_TERMS = (
     "friendly",
     "friendlies",
+    "friendly games",
+    "club friendly",
+    "club friendlies",
+    "friendlies clubs",
+    "international friendly",
+    "international friendlies",
     "amistoso",
     "amistosos",
     "exhibition",
@@ -91,10 +97,20 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 
 def classify_competition(fixture: Fixture) -> CompetitionQuality:
     competition = fixture.competition_ref
-    name = fixture.competition or (competition.name if competition else "")
+
+    # IMPORTANT: use *all* available metadata. Previously fixture.competition
+    # short-circuited competition_ref.name via `or`, so a generic value such as
+    # "World" could hide the actual API-Football league name "Friendlies Clubs".
+    fixture_name = fixture.competition or ""
+    ref_name = competition.name if competition else ""
     competition_type = competition.competition_type if competition else ""
     country = competition.country if competition else ""
-    text = _normalize(f"{name} {competition_type} {country}")
+    round_name = fixture.round or ""
+    external_id = competition.external_id if competition else ""
+
+    text = _normalize(
+        f"{fixture_name} {ref_name} {competition_type} {country} {round_name} {external_id}"
+    )
 
     if _contains_any(text, FRIENDLY_TERMS) or _normalize(competition_type) in {
         "friendly",
