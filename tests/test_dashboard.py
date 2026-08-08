@@ -1,12 +1,17 @@
-from decimal import Decimal
+import json
+import os
 from datetime import timedelta
+from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
+from dashboard.pipeline_trigger import TriggerResult
 from engine.models import DailyPremiumSelection, Fixture, Prediction, Team
 from engine.score_v8 import V8_MODEL_VERSION
+from scanner.models import PipelineRun
 
 
 class DashboardTests(TestCase):
@@ -118,3 +123,34 @@ class DashboardTests(TestCase):
         self.assertContains(response, "100,0%")
         self.assertContains(response, "0,80 u")
         self.assertContains(response, "WIN")
+
+    def test_generate_premium_rejects_wrong_pin(self):
+        with patch.dict(os.environ, {"PIPELINE_TRIGGER_PIN": "2468", "GITHUB_ACTIONS_TOKEN": "token"}, clear=False):
+            response = self.client.post(
+                "/dashboard/generate-premium/",
+                data=json.dumps({"pin": "0000"}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(response.json()["ok"])
+
+    def test_generate_premium_dispatches_full_workflow_with_correct_pin(self):
+        with (
+            patch.dict(os.environ, {"PIPELINE_TRIGGER_PIN": "2468", "GITHUB_ACTIONS_TOKEN": "token"}, clear=False),
+            patch("dashboard.views.GitHubPipelineTrigger.dispatch", return_value=TriggerResult(True, "enviado")) as dispatch,
+        ):
+            response = self.client.post(
+                "/dashboard/generate-premium/",
+                data=json.dumps({"pin": "2468"}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        dispatch.assert_called_once_with(target_date=timezone.localdate(), mode="full")
+
+    def test_generation_status_reports_latest_pipeline(self):
+        run = PipelineRun.objects.create(target_date=timezone.localdate(), metadata={"model_version": V8_MODEL_VERSION})
+        response = self.client.get("/dashboard/generation-status/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["run"]["id"], run.id)
+        self.assertEqual(response.json()["run"]["status"], PipelineRun.STATUS_RUNNING)
