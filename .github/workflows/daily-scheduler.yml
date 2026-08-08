@@ -2,9 +2,11 @@ name: daily-scheduler
 
 on:
   schedule:
-    # 06:00 America/Lima (UTC-5)
+    # 06:00 America/Lima (UTC-5): discover card + first score
     - cron: "0 11 * * *"
-    # 23:30 America/Lima (04:30 UTC on the following UTC day)
+    # 11:00 America/Lima (UTC-5): refresh odds/lineups for shortlist + rescore
+    - cron: "0 16 * * *"
+    # 23:30 America/Lima (04:30 UTC on the following UTC day): settle + learn
     - cron: "30 4 * * *"
   workflow_dispatch:
     inputs:
@@ -81,6 +83,8 @@ jobs:
             MODE="${MANUAL_MODE:-full}"
           elif [ "$SCHEDULE_EXPRESSION" = "0 11 * * *" ]; then
             MODE="morning"
+          elif [ "$SCHEDULE_EXPRESSION" = "0 16 * * *" ]; then
+            MODE="refresh"
           else
             MODE="settlement"
           fi
