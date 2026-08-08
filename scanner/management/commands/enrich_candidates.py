@@ -8,6 +8,7 @@ from decimal import Decimal
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
 from engine.models import Fixture, OddsSnapshot, Prediction, StandingSnapshot
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.ingestion import DataIngestionService
@@ -19,26 +20,42 @@ MIN_VENUE_SAMPLE = 3
 HISTORY_FETCH_LAST = 20
 HISTORY_WORKERS = 5
 STANDINGS_MAX_AGE_HOURS = 6
-INTERACTIVE_LIMIT = 8
-INTERACTIVE_MIN_SCORE = 70.0
+INTERACTIVE_LIMIT = 12
+INTERACTIVE_MIN_SCORE = 82.0
+INTERACTIVE_MIN_EDGE = 0.07
+INTERACTIVE_MIN_EV = 0.10
 INTERACTIVE_LINEUP_WINDOW_HOURS = 2
 
 
 class Command(BaseCommand):
     help = (
         "Enrich only the strongest future V8 candidates with historical venue samples, "
-        "live odds/lineups and competition standings. Designed as the selective fast "
-        "path after the bulk daily score, never as a full-card enrichment."
+        "live odds/lineups and competition standings. Interactive mode uses the Sprint "
+        "6.5 High Recall Candidate Pool instead of a score-only Top-N shortlist."
     )
 
     def add_arguments(self, parser):
         parser.add_argument("--date", dest="target_date", required=True, help="YYYY-MM-DD")
         parser.add_argument("--limit", type=int, default=20, help="Maximum unique fixtures to enrich.")
-        parser.add_argument("--min-score", type=float, default=50.0, help="Minimum V8 score to enter shortlist.")
+        parser.add_argument("--min-score", type=float, default=50.0, help="Minimum V8 score to enter legacy shortlist.")
 
     @staticmethod
     def _interactive_fast_enabled() -> bool:
         return os.getenv("PREMIUM_INTERACTIVE_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _interactive_fixture_ids(self, target_date: date, limit: int) -> tuple[list[int], dict[int, tuple[str, ...]]]:
+        entries = high_recall_candidate_pool(
+            target_date,
+            rule=CandidatePoolRule(
+                min_score=INTERACTIVE_MIN_SCORE,
+                min_edge=INTERACTIVE_MIN_EDGE,
+                min_ev=INTERACTIVE_MIN_EV,
+                limit=limit,
+            ),
+        )
+        return [entry.fixture_id for entry in entries], {
+            entry.fixture_id: entry.entry_reasons for entry in entries
+        }
 
     def handle(self, *args, **options):
         try:
@@ -50,38 +67,42 @@ class Command(BaseCommand):
         requested_limit = max(1, min(int(options["limit"]), 50))
         requested_min_score = float(options["min_score"])
         limit = min(requested_limit, INTERACTIVE_LIMIT) if interactive_fast else requested_limit
-        min_score = max(requested_min_score, INTERACTIVE_MIN_SCORE) if interactive_fast else requested_min_score
+        min_score = requested_min_score
         start = timezone.make_aware(datetime.combine(target_date, time.min))
         end = start + timedelta(days=1)
         now = timezone.now()
         future_start = max(start, now)
 
-        prediction_qs = (
-            Prediction.objects.filter(
-                model_version=V8_MODEL_VERSION,
-                fixture__kickoff__gte=future_start,
-                fixture__kickoff__lt=end,
-                score__gte=min_score,
+        entry_reasons_by_fixture: dict[int, tuple[str, ...]] = {}
+        if interactive_fast:
+            fixture_ids, entry_reasons_by_fixture = self._interactive_fixture_ids(target_date, limit)
+        else:
+            prediction_qs = (
+                Prediction.objects.filter(
+                    model_version=V8_MODEL_VERSION,
+                    fixture__kickoff__gte=future_start,
+                    fixture__kickoff__lt=end,
+                    score__gte=min_score,
+                )
+                .select_related("fixture", "fixture__competition_ref")
+                .order_by("-tier", "-score", "fixture__kickoff")
             )
-            .select_related("fixture", "fixture__competition_ref")
-            .order_by("-tier", "-score", "fixture__kickoff")
-        )
-
-        fixture_ids: list[int] = []
-        seen: set[int] = set()
-        for prediction in prediction_qs.iterator(chunk_size=500):
-            if prediction.fixture_id in seen:
-                continue
-            seen.add(prediction.fixture_id)
-            fixture_ids.append(prediction.fixture_id)
-            if len(fixture_ids) >= limit:
-                break
+            fixture_ids = []
+            seen: set[int] = set()
+            for prediction in prediction_qs.iterator(chunk_size=500):
+                if prediction.fixture_id in seen:
+                    continue
+                seen.add(prediction.fixture_id)
+                fixture_ids.append(prediction.fixture_id)
+                if len(fixture_ids) >= limit:
+                    break
 
         fixtures = list(
             Fixture.objects.filter(id__in=fixture_ids)
             .select_related("home_team", "away_team", "competition_ref")
-            .order_by("kickoff")
         )
+        fixture_order = {fixture_id: index for index, fixture_id in enumerate(fixture_ids)}
+        fixtures.sort(key=lambda fixture: fixture_order.get(fixture.id, 9999))
         if not fixtures:
             self.stdout.write("[enrich] no future candidates matched shortlist filters")
             return
@@ -99,10 +120,20 @@ class Command(BaseCommand):
         fallback_coverage = 0
         no_odds_coverage = 0
 
-        self.stdout.write(
-            f"[enrich] future_candidates={len(fixtures)} min_score={min_score:.1f} limit={limit} "
-            f"interactive_fast={int(interactive_fast)}"
-        )
+        if interactive_fast:
+            self.stdout.write(
+                f"[enrich] high_recall_pool={len(fixtures)} limit={limit} "
+                f"rules=score>={INTERACTIVE_MIN_SCORE:.0f}|edge>={INTERACTIVE_MIN_EDGE:.2f}|ev>={INTERACTIVE_MIN_EV:.2f}"
+            )
+            for index, fixture in enumerate(fixtures, start=1):
+                reasons = ",".join(entry_reasons_by_fixture.get(fixture.id, ())) or "unknown"
+                self.stdout.write(
+                    f"[enrich] pool #{index} {fixture.home_team.name} vs {fixture.away_team.name} via={reasons}"
+                )
+        else:
+            self.stdout.write(
+                f"[enrich] future_candidates={len(fixtures)} min_score={min_score:.1f} limit={limit} interactive_fast=0"
+            )
 
         # Interactive dashboard generation must be responsive. The scheduled
         # pipeline is responsible for filling historical venue gaps. If history
@@ -233,11 +264,7 @@ class Command(BaseCommand):
 
     @staticmethod
     def _fetch_team_history(team_external_id: str, before_kickoff: datetime) -> list[dict]:
-        """Fetch one team's recent FT history using an isolated HTTP session.
-
-        Network calls are safe to run concurrently; filtering here keeps future or
-        same-kickoff rows out before they reach the shared bulk persistence phase.
-        """
+        """Fetch one team's recent FT history using an isolated HTTP session."""
         provider = APIFootballProvider()
         raw_history = provider.team_recent_fixtures(team_external_id, last=HISTORY_FETCH_LAST)
         accepted: list[dict] = []
