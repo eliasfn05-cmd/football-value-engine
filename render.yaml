@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: football-value-engine
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health/
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_HOSTS
+        value: football-value-engine.onrender.com
+      - key: CSRF_TRUSTED_ORIGINS
+        value: https://football-value-engine.onrender.com
+      - key: DATABASE_URL
+        fromDatabase:
+          name: football-value-engine-db
+          property: connectionString
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: PREFERRED_BOOKMAKER
+        value: Betano
+      - key: MODEL_VERSION
+        value: "7.0"
+      - key: MIN_EDGE
+        value: "0.06"
+      - key: MIN_EV
+        value: "0.08"
+    dockerCommand: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+
+databases:
+  - name: football-value-engine-db
+    plan: basic-256mb
+    databaseName: football_value_engine
+    user: football_value_engine
