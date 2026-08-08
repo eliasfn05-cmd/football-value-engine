@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
 from backtesting.services import LearningAnalyticsService
+from engine.competition_quality import classify_competition
 from engine.models import DailyPremiumSelection, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.models import PipelineRun
@@ -70,19 +71,30 @@ class DashboardService:
         )
 
     def premium_picks(self, *, limit: int = 3) -> list[DailyPremiumSelection]:
-        return list(
+        # Defensive production barrier: even a stale DailyPremiumSelection created
+        # before Sprint 6.2 must never be shown if its fixture is a friendly.
+        candidates = (
             DailyPremiumSelection.objects.select_related(
                 "prediction",
                 "prediction__fixture",
                 "prediction__fixture__home_team",
                 "prediction__fixture__away_team",
+                "prediction__fixture__competition_ref",
             )
             .filter(
                 model_version=self.model_version,
                 prediction__fixture__kickoff__gte=timezone.now(),
             )
-            .order_by("target_date", "rank")[:limit]
+            .order_by("target_date", "rank")
         )
+        rows: list[DailyPremiumSelection] = []
+        for row in candidates.iterator(chunk_size=50):
+            if classify_competition(row.prediction.fixture).excluded:
+                continue
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+        return rows
 
     def operational_summary(self, premium_picks: list[DailyPremiumSelection]) -> dict[str, Any]:
         future = Prediction.objects.filter(
@@ -107,6 +119,8 @@ class DashboardService:
 
     @staticmethod
     def _rejection_reason(prediction: Prediction) -> str:
+        if classify_competition(prediction.fixture).excluded:
+            return "Partido amistoso/exhibición excluido"
         reasons = prediction.reasons or {}
         failures = reasons.get("v8_gate_failures") or []
         if failures:
@@ -132,7 +146,12 @@ class DashboardService:
 
     def near_premium(self, *, limit: int = 20) -> list[dict[str, Any]]:
         qs = (
-            Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team")
+            Prediction.objects.select_related(
+                "fixture",
+                "fixture__home_team",
+                "fixture__away_team",
+                "fixture__competition_ref",
+            )
             .filter(model_version=self.model_version, fixture__kickoff__gte=timezone.now())
             .order_by("-score", "-expected_value", "fixture__kickoff")[:limit]
         )
