@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
@@ -16,7 +15,7 @@ from scanner.providers.api_football import APIFootballProvider
 
 class Command(BaseCommand):
     help = (
-        "Enrich only the strongest V8 candidates with live odds/lineups and "
+        "Enrich only the strongest future V8 candidates with live odds/lineups and "
         "competition standings. Designed as the selective fast path after the "
         "bulk daily score, never as a full-card enrichment."
     )
@@ -36,11 +35,13 @@ class Command(BaseCommand):
         min_score = float(options["min_score"])
         start = timezone.make_aware(datetime.combine(target_date, time.min))
         end = start + timedelta(days=1)
+        now = timezone.now()
+        future_start = max(start, now)
 
         prediction_qs = (
             Prediction.objects.filter(
                 model_version=V8_MODEL_VERSION,
-                fixture__kickoff__gte=start,
+                fixture__kickoff__gte=future_start,
                 fixture__kickoff__lt=end,
                 score__gte=min_score,
             )
@@ -64,7 +65,7 @@ class Command(BaseCommand):
             .order_by("kickoff")
         )
         if not fixtures:
-            self.stdout.write("[enrich] no candidates matched shortlist filters")
+            self.stdout.write("[enrich] no future candidates matched shortlist filters")
             return
 
         provider = APIFootballProvider()
@@ -74,38 +75,40 @@ class Command(BaseCommand):
         lineups_saved = 0
         standings_saved = 0
         errors = 0
-        preferred_hits = 0
-        fallback_hits = 0
-        no_odds = 0
-        preferred_name = os.getenv("PREFERRED_BOOKMAKER", "Betano").strip().lower()
+        preferred_coverage = 0
+        fallback_coverage = 0
+        no_odds_coverage = 0
 
         self.stdout.write(
-            f"[enrich] candidates={len(fixtures)} min_score={min_score:.1f} limit={limit}"
+            f"[enrich] future_candidates={len(fixtures)} min_score={min_score:.1f} limit={limit}"
         )
 
         for index, fixture in enumerate(fixtures, start=1):
             self.stdout.write(
-                f"[enrich] {index}/{len(fixtures)} {fixture.home_team.name} vs {fixture.away_team.name}"
+                f"[enrich] {index}/{len(fixtures)} {fixture.home_team.name} vs {fixture.away_team.name} "
+                f"kickoff={fixture.kickoff.isoformat()}"
             )
             try:
                 odds_payload = provider.fixture_odds(fixture.external_id)
-                quotes = parse_quotes(odds_payload, allow_fallback=True)
-                quote_bookmakers = {
-                    quote.bookmaker.strip().lower()
-                    for quote in quotes.values()
-                    if quote is not None and quote.bookmaker
-                }
-                if not quote_bookmakers:
-                    no_odds += 1
-                elif preferred_name in quote_bookmakers:
-                    preferred_hits += 1
+                strict_quotes = parse_quotes(odds_payload)
+                quotes = strict_quotes
+                used_fallback = False
+                if strict_quotes.get("btts") is None and strict_quotes.get("over25") is None:
+                    quotes = parse_quotes(odds_payload, allow_fallback=True)
+                    used_fallback = any(quotes.get(key) is not None for key in ("btts", "over25"))
+
+                if any(strict_quotes.get(key) is not None for key in ("btts", "over25")):
+                    preferred_coverage += 1
+                elif used_fallback:
+                    fallback_coverage += 1
                 else:
-                    fallback_hits += 1
+                    no_odds_coverage += 1
 
                 odds_saved += self._save_quote_if_changed(fixture, "BTTS", "YES", quotes.get("btts"))
                 odds_saved += self._save_quote_if_changed(fixture, "OVER_2_5", "OVER", quotes.get("over25"))
             except Exception as exc:
                 errors += 1
+                no_odds_coverage += 1
                 self.stderr.write(f"[enrich] odds error fixture={fixture.external_id}: {exc}")
 
             try:
@@ -127,11 +130,11 @@ class Command(BaseCommand):
                     )
 
         self.stdout.write(
-            f"[enrich] odds coverage preferred={preferred_hits} fallback={fallback_hits} none={no_odds}"
+            f"[enrich] odds coverage preferred={preferred_coverage} fallback={fallback_coverage} none={no_odds_coverage}"
         )
         self.stdout.write(
             self.style.SUCCESS(
-                f"[enrich] complete candidates={len(fixtures)} odds={odds_saved} "
+                f"[enrich] complete future_candidates={len(fixtures)} odds={odds_saved} "
                 f"lineups={lineups_saved} standings={standings_saved} errors={errors}"
             )
         )
