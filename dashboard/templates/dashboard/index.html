@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Football Value Engine</title>
+  <title>Football Value Engine · Premium</title>
   <link rel="stylesheet" href="{% static 'dashboard/dashboard.css' %}">
 </head>
 <body>
@@ -12,13 +12,50 @@
     <header class="hero">
       <div>
         <p class="eyebrow">FOOTBALL VALUE ENGINE</p>
-        <h1>Dashboard Premium</h1>
+        <h1>Premium Picks</h1>
         <p class="subtitle">Modelo {{ model_version }} · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
       </div>
       <div class="status-pill"><span></span> Producción</div>
     </header>
 
-    <section class="metrics-grid">
+    <section class="metrics-grid operational-grid">
+      <article class="metric-card"><span>Partidos analizados</span><strong>{{ operational.fixtures_analyzed }}</strong><small>Próximos eventos evaluados</small></article>
+      <article class="metric-card"><span>Picks Premium</span><strong>{{ operational.premium_count }}</strong><small>Solo TIER_A vigentes</small></article>
+      <article class="metric-card"><span>EV promedio</span><strong>{% if operational.avg_ev_pct != None %}+{{ operational.avg_ev_pct }}%{% else %}—{% endif %}</strong><small>Sobre picks Premium</small></article>
+      <article class="metric-card"><span>Score promedio</span><strong>{% if operational.avg_score != None %}{{ operational.avg_score }}{% else %}—{% endif %}</strong><small>Umbral Premium ≥ 80</small></article>
+    </section>
+
+    {% if premium_picks %}
+    <section class="panel premium-panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">SELECCIÓN OFICIAL</p><h2>Picks Premium del día</h2></div>
+        <button id="copy-picks" class="action-button" type="button">Copiar Picks</button>
+      </div>
+      <div class="premium-grid" id="premium-picks">
+        {% for pick in premium_picks %}
+        <article class="premium-card" data-copy="{{ forloop.counter }}. {{ pick.fixture.home_team.name }} vs {{ pick.fixture.away_team.name }} | {{ pick.market }} {{ pick.selection }} | Cuota {% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %} | Prob. {{ pick.probability|floatformat:3 }} | EV {% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %}">
+          <div class="premium-card-top"><span class="premium-label">PREMIUM #{{ forloop.counter }}</span><span class="score-badge">{{ pick.score|floatformat:1 }}</span></div>
+          <h3>{{ pick.fixture.home_team.name }} <span>vs</span> {{ pick.fixture.away_team.name }}</h3>
+          <div class="pick-market">{{ pick.market }} · {{ pick.selection }}</div>
+          <div class="pick-stats">
+            <div><small>Probabilidad</small><strong>{{ pick.probability|floatformat:3 }}</strong></div>
+            <div><small>Cuota</small><strong>{% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %}</strong></div>
+            <div><small>Edge</small><strong>{% if pick.edge != None %}{{ pick.edge|floatformat:3 }}{% else %}—{% endif %}</strong></div>
+            <div><small>EV</small><strong>{% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %}</strong></div>
+          </div>
+          <div class="kickoff">Inicio: {{ pick.fixture.kickoff|date:"d/m/Y H:i" }}</div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    {% else %}
+    <section class="no-bet-card">
+      <div class="no-bet-icon">—</div>
+      <div><p class="eyebrow">DECISIÓN DEL MODELO</p><h2>NO BET</h2><p>No existen Picks Premium que cumplan todos los criterios actuales. No se recomienda realizar apuestas hasta que aparezca una selección TIER_A.</p></div>
+    </section>
+    {% endif %}
+
+    <section class="metrics-grid history-metrics">
       <article class="metric-card"><span>Win Rate</span><strong>{% if metrics.win_rate_pct != None %}{{ metrics.win_rate_pct }}%{% else %}—{% endif %}</strong><small>{{ metrics.wins }}W · {{ metrics.losses }}L · n={{ metrics.sample_size }}</small></article>
       <article class="metric-card"><span>ROI</span><strong>{% if metrics.roi_pct != None %}{{ metrics.roi_pct }}%{% else %}—{% endif %}</strong><small>Sobre stake liquidado</small></article>
       <article class="metric-card"><span>Yield</span><strong>{% if metrics.yield_pct != None %}{{ metrics.yield_pct }}%{% else %}—{% endif %}</strong><small>Rendimiento por unidad</small></article>
@@ -26,68 +63,28 @@
     </section>
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">AUTOMATIZACIÓN</p><h2>Estado del Pipeline</h2></div>{% if pipeline %}<span class="count-badge">#{{ pipeline.id }}</span>{% endif %}</div>
-      {% if pipeline %}
-      <div class="metrics-grid">
-        <article class="metric-card"><span>Estado</span><strong>{{ pipeline.status }}</strong><small>{{ pipeline.target_date|date:"d/m/Y" }}</small></article>
-        <article class="metric-card"><span>Duración</span><strong>{{ pipeline.duration_seconds }} s</strong><small>{{ pipeline.warning_count }} warnings · {{ pipeline.error_count }} errores</small></article>
-        <article class="metric-card"><span>Datos</span><strong>{{ pipeline.fixtures_count }}</strong><small>fixtures · {{ pipeline.predictions_count }} predicciones</small></article>
-        <article class="metric-card"><span>Premium</span><strong>{{ pipeline.premium_count }}</strong><small>{{ pipeline.settled_count }} picks liquidados</small></article>
-      </div>
-      <div class="mini-list">
-        {% for stage in pipeline.stages %}
-        <div class="mini-row"><div><strong>{{ stage.name }}</strong><small>{{ stage.message|default:"Sin detalle" }}</small></div><div class="right"><strong>{{ stage.status }}</strong><small>{{ stage.attempt_count }} intento(s) · {{ stage.duration_seconds }} s</small></div></div>
-        {% endfor %}
-      </div>
-      {% else %}<p class="empty">El pipeline todavía no se ha ejecutado. Al correr daily_pipeline aparecerá aquí su estado.</p>{% endif %}
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">SELECCIÓN ACTUAL</p><h2>Picks Premium</h2></div><span class="count-badge">{{ premium_picks|length }}</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>EV</th><th>Score</th><th>Hora</th></tr></thead>
-          <tbody>
-            {% for pick in premium_picks %}
-            <tr><td><strong>{{ pick.fixture.home_team.name }}</strong> vs {{ pick.fixture.away_team.name }}</td><td><span class="market-pill">{{ pick.market }}</span></td><td>{{ pick.probability|floatformat:3 }}</td><td>{% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td>{% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %}</td><td><strong>{{ pick.score|floatformat:1 }}</strong></td><td>{{ pick.fixture.kickoff|date:"d/m H:i" }}</td></tr>
-            {% empty %}<tr><td colspan="7" class="empty">No hay Picks Premium futuros almacenados todavía.</td></tr>{% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">DIAGNÓSTICO</p><h2>Candidatos cercanos a Premium</h2></div><span class="count-badge">{{ near_premium|length }}</span></div>
-      {% if rejection_summary %}
-      <div class="mini-list">
-        {% for row in rejection_summary %}
-        <div class="mini-row"><div><strong>{{ row.label }}</strong><small>{{ row.count }} predicciones futuras afectadas</small></div><div class="right"><strong>{{ row.pct }}%</strong><small>del universo no Premium</small></div></div>
-        {% endfor %}
-      </div>
-      {% endif %}
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>Edge</th><th>EV</th><th>Score</th><th>Motivo</th></tr></thead>
-          <tbody>
-            {% for row in near_premium %}
-            <tr><td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td><td><span class="market-pill">{{ row.prediction.market }}</span></td><td>{{ row.prediction.probability|floatformat:3 }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td>{% if row.prediction.edge != None %}{{ row.prediction.edge|floatformat:3 }}{% else %}—{% endif %}</td><td>{% if row.prediction.expected_value != None %}{{ row.prediction.expected_value|floatformat:3 }}{% else %}—{% endif %}</td><td><strong>{{ row.prediction.score|floatformat:1 }}</strong></td><td>{{ row.reason }}</td></tr>
-            {% empty %}<tr><td colspan="8" class="empty">No hay candidatos futuros para diagnosticar.</td></tr>{% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="split-grid">
-      <article class="panel"><div class="panel-head"><div><p class="eyebrow">BACKTESTING</p><h2>Por mercado</h2></div></div><div class="mini-list">{% for row in market_performance %}<div class="mini-row"><div><strong>{{ row.market }}</strong><small>n={{ row.sample_size }} · {{ row.profit_units|floatformat:2 }} u</small></div><div class="right"><strong>{% if row.win_rate_pct != None %}{{ row.win_rate_pct }}%{% else %}—{% endif %}</strong><small>ROI {% if row.roi_pct != None %}{{ row.roi_pct }}%{% else %}—{% endif %}</small></div></div>{% empty %}<p class="empty">Sin resultados suficientes por mercado.</p>{% endfor %}</div></article>
-      <article class="panel"><div class="panel-head"><div><p class="eyebrow">APRENDIZAJE</p><h2>Rendimiento por filtro</h2></div></div><div class="mini-list">{% for row in rule_performance %}<div class="mini-row"><div><strong>{{ row.rule }}</strong><small>n={{ row.sample_size }} · {{ row.profit_units|floatformat:2 }} u</small></div><div class="right"><strong>{% if row.win_rate_pct != None %}{{ row.win_rate_pct }}%{% else %}—{% endif %}</strong><small>ROI {% if row.roi_pct != None %}{{ row.roi_pct }}%{% else %}—{% endif %}</small></div></div>{% empty %}<p class="empty">Los filtros aparecerán cuando existan picks liquidados.</p>{% endfor %}</div></article>
-    </section>
-
-    <section class="panel">
       <div class="panel-head"><div><p class="eyebrow">HISTÓRICO</p><h2>Últimos resultados Premium</h2></div></div>
       <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Pick</th><th>Marcador</th><th>Cuota</th><th>Resultado</th><th>P/L</th></tr></thead><tbody>{% for row in recent_results %}<tr><td>{{ row.prediction.fixture.home_team.name }} vs {{ row.prediction.fixture.away_team.name }}</td><td>{{ row.prediction.market }} · {{ row.prediction.selection }}</td><td>{{ row.home_goals }}-{{ row.away_goals }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td><span class="result result-{{ row.result|lower }}">{{ row.result }}</span></td><td><strong>{{ row.profit_units|floatformat:2 }} u</strong></td></tr>{% empty %}<tr><td colspan="6" class="empty">Aún no hay Picks Premium liquidados.</td></tr>{% endfor %}</tbody></table></div>
     </section>
 
-    <footer>Football Value Engine · métricas calculadas sobre predicciones almacenadas, sin reinterpretación posterior al partido.</footer>
+    <footer>Football Value Engine · Solo selecciones TIER_A validadas por probabilidad, edge, EV, score y calidad de datos.</footer>
   </main>
+
+  <script>
+    const copyButton = document.getElementById('copy-picks');
+    if (copyButton) {
+      copyButton.addEventListener('click', async () => {
+        const rows = [...document.querySelectorAll('.premium-card')].map(card => card.dataset.copy);
+        const text = `FOOTBALL VALUE ENGINE · PICKS PREMIUM\n\n${rows.join('\n\n')}`;
+        try {
+          await navigator.clipboard.writeText(text);
+          copyButton.textContent = 'Copiado ✓';
+          setTimeout(() => copyButton.textContent = 'Copiar Picks', 1800);
+        } catch (_) {
+          copyButton.textContent = 'No se pudo copiar';
+        }
+      });
+    }
+  </script>
 </body>
 </html>
