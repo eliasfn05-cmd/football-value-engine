@@ -27,8 +27,8 @@ class DailyPipeline:
     """Production orchestrator for the football-value workflow.
 
     Modes:
-    - morning: fast bulk fixture ingestion + V8 scoring.
-    - full: fast bulk ingestion + scoring + settlement + learning.
+    - morning: fast bulk fixture ingestion + first-pass V8 scoring.
+    - full: ingest + first score + selective enrichment + rescore + settlement + learning.
     - refresh: enrich a small shortlist (odds/lineups/standings) + rescore.
     - settlement: settlement + learning only.
     - detailed: legacy/manual full-card enrichment; never scheduled normally.
@@ -72,7 +72,7 @@ class DailyPipeline:
         self._run_command(
             "enrich_candidates",
             target_date=target_date.isoformat(),
-            limit=20,
+            limit=30,
             min_score=50.0,
         )
         start, end = self._date_bounds(target_date)
@@ -87,7 +87,7 @@ class DailyPipeline:
             .distinct()
             .count()
         )
-        processed = min(candidates, 20)
+        processed = min(candidates, 30)
         return StageResult(processed, f"{processed} shortlisted fixtures enriched", {"candidates": processed})
 
     def _settle(self, target_date: date) -> StageResult:
@@ -174,6 +174,8 @@ class DailyPipeline:
         return [
             ("INGEST", lambda: self._ingest(target_date, fixtures_only=True), True),
             ("SCORE_V8", lambda: self._score(target_date), True),
+            ("ENRICH_CANDIDATES", lambda: self._enrich(target_date), False),
+            ("RESCORE_V8", lambda: self._score(target_date), True),
             ("SETTLE", lambda: self._settle(target_date), False),
             ("LEARNING", lambda: self._learning(target_date), False),
         ]
@@ -191,7 +193,7 @@ class DailyPipeline:
         warning_count = 0
         error_count = 0
         for name, fn, required in stages:
-            if name == "SCORE_V8" and ingest_failed:
+            if name in {"SCORE_V8", "RESCORE_V8"} and ingest_failed:
                 PipelineStageRun.objects.create(
                     pipeline=pipeline,
                     name=name,
@@ -202,7 +204,7 @@ class DailyPipeline:
                     details={"dependency": "INGEST"},
                 )
                 warning_count += 1
-                print(f"[pipeline #{pipeline.id}] SKIP SCORE_V8 because INGEST failed", flush=True)
+                print(f"[pipeline #{pipeline.id}] SKIP {name} because INGEST failed", flush=True)
                 continue
             stage = self._run_stage(pipeline, name, fn, required=required)
             if stage.status == PipelineStageRun.STATUS_FAILED:
