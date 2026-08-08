@@ -28,8 +28,8 @@ class DailyPipeline:
 
     Modes:
     - morning: fast bulk fixture ingestion + first-pass V8 scoring.
-    - full: ingest + first score + selective enrichment + rescore + settlement + learning.
-    - refresh: enrich a small shortlist (odds/lineups/standings) + rescore.
+    - full: ingest + first score + selective enrichment + targeted future rescore + settlement + learning.
+    - refresh: enrich a small shortlist (history/odds/lineups/standings) + targeted future rescore.
     - settlement: settlement + learning only.
     - detailed: legacy/manual full-card enrichment; never scheduled normally.
     """
@@ -68,27 +68,75 @@ class DailyPipeline:
         premium = qs.filter(tier="TIER_A").count()
         return StageResult(count, f"{count} predictions; {premium} premium", {"predictions": count, "premium": premium})
 
+    def _future_candidate_fixture_ids(self, target_date: date, *, limit: int = 30) -> list[int]:
+        start, end = self._date_bounds(target_date)
+        future_start = max(start, timezone.now())
+        qs = (
+            Prediction.objects.filter(
+                model_version=V8_MODEL_VERSION,
+                fixture__kickoff__gte=future_start,
+                fixture__kickoff__lt=end,
+                score__gte=50,
+            )
+            .select_related("fixture")
+            .order_by("-tier", "-score", "fixture__kickoff")
+        )
+        fixture_ids: list[int] = []
+        seen: set[int] = set()
+        for prediction in qs.iterator(chunk_size=500):
+            if prediction.fixture_id in seen:
+                continue
+            seen.add(prediction.fixture_id)
+            fixture_ids.append(prediction.fixture_id)
+            if len(fixture_ids) >= limit:
+                break
+        return fixture_ids
+
     def _enrich(self, target_date: date) -> StageResult:
+        fixture_ids = self._future_candidate_fixture_ids(target_date, limit=30)
         self._run_command(
             "enrich_candidates",
             target_date=target_date.isoformat(),
             limit=30,
             min_score=50.0,
         )
-        start, end = self._date_bounds(target_date)
-        candidates = (
-            Prediction.objects.filter(
-                model_version=V8_MODEL_VERSION,
-                fixture__kickoff__gte=start,
-                fixture__kickoff__lt=end,
-                score__gte=50,
-            )
-            .values("fixture_id")
-            .distinct()
-            .count()
+        processed = len(fixture_ids)
+        return StageResult(processed, f"{processed} future shortlisted fixtures enriched", {"candidates": processed})
+
+    def _rescore_enriched(self, target_date: date) -> StageResult:
+        """Re-evaluate exactly the future shortlist after its evidence was enriched.
+
+        Fixture-level scoring uses FeatureEngineeringService, whose standing/odds/
+        lineup lookups are relative to that fixture. This avoids a whole-day batch
+        cutoff masking evidence captured during the enrichment stage.
+        """
+        fixture_ids = self._future_candidate_fixture_ids(target_date, limit=30)
+        fixtures = list(
+            Fixture.objects.filter(id__in=fixture_ids)
+            .select_related("home_team", "away_team")
         )
-        processed = min(candidates, 30)
-        return StageResult(processed, f"{processed} shortlisted fixtures enriched", {"candidates": processed})
+        fixture_map = {fixture.id: fixture for fixture in fixtures}
+        rescored = 0
+        for fixture_id in fixture_ids:
+            fixture = fixture_map.get(fixture_id)
+            if fixture is None or fixture.kickoff <= timezone.now():
+                continue
+            self._run_command("score_v8", fixture_id=fixture.external_id)
+            rescored += 1
+
+        start, end = self._date_bounds(target_date)
+        future_start = max(start, timezone.now())
+        future_qs = Prediction.objects.filter(
+            model_version=V8_MODEL_VERSION,
+            fixture__kickoff__gte=future_start,
+            fixture__kickoff__lt=end,
+        )
+        premium = future_qs.filter(tier="TIER_A").count()
+        return StageResult(
+            rescored,
+            f"{rescored} enriched future fixtures rescored; {premium} future premium",
+            {"rescored": rescored, "future_premium": premium},
+        )
 
     def _settle(self, target_date: date) -> StageResult:
         before = PredictionOutcome.objects.filter(prediction__model_version=V8_MODEL_VERSION).count()
@@ -157,7 +205,7 @@ class DailyPipeline:
         if mode == "refresh":
             return [
                 ("ENRICH_CANDIDATES", lambda: self._enrich(target_date), False),
-                ("SCORE_V8", lambda: self._score(target_date), True),
+                ("RESCORE_V8", lambda: self._rescore_enriched(target_date), True),
             ]
         if mode == "settlement":
             return [
@@ -175,7 +223,7 @@ class DailyPipeline:
             ("INGEST", lambda: self._ingest(target_date, fixtures_only=True), True),
             ("SCORE_V8", lambda: self._score(target_date), True),
             ("ENRICH_CANDIDATES", lambda: self._enrich(target_date), False),
-            ("RESCORE_V8", lambda: self._score(target_date), True),
+            ("RESCORE_V8", lambda: self._rescore_enriched(target_date), True),
             ("SETTLE", lambda: self._settle(target_date), False),
             ("LEARNING", lambda: self._learning(target_date), False),
         ]
@@ -224,7 +272,8 @@ class DailyPipeline:
             fixture__kickoff__lt=end,
         )
         predictions_count = predictions.count()
-        premium_count = predictions.filter(tier="TIER_A").count()
+        future_start = max(start, timezone.now())
+        premium_count = predictions.filter(tier="TIER_A", fixture__kickoff__gte=future_start).count()
         settled_count = PredictionOutcome.objects.filter(prediction__model_version=V8_MODEL_VERSION).exclude(
             result=PredictionOutcome.RESULT_PENDING
         ).count()
