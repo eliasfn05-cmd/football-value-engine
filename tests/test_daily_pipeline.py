@@ -12,17 +12,23 @@ class DailyPipelineTests(TestCase):
         pipeline = DailyPipeline(max_attempts=2, retry_delay_seconds=0)
         with (
             patch.object(pipeline, "_ingest", return_value=StageResult(12, "12 fixtures", {"fixtures": 12})) as ingest,
-            patch.object(pipeline, "_score", return_value=StageResult(24, "24 predictions", {"predictions": 24, "premium": 2})),
+            patch.object(pipeline, "_score", return_value=StageResult(24, "24 predictions", {"predictions": 24, "premium": 2})) as score,
+            patch.object(pipeline, "_enrich", return_value=StageResult(8, "8 enriched", {"candidates": 8})) as enrich,
             patch.object(pipeline, "_settle", return_value=StageResult(3, "3 settled", {"new": 3})),
             patch.object(pipeline, "_learning", return_value=StageResult(8, "learning refreshed", {"premium_outcomes": 8})),
         ):
             run = pipeline.run(date(2026, 8, 8))
 
         self.assertEqual(run.status, PipelineRun.STATUS_SUCCESS)
-        self.assertEqual(run.stages.count(), 4)
+        self.assertEqual(
+            list(run.stages.values_list("name", flat=True)),
+            ["INGEST", "SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8", "SETTLE", "LEARNING"],
+        )
         self.assertEqual(run.metadata["mode"], "full")
         self.assertTrue(all(stage.status == PipelineStageRun.STATUS_SUCCESS for stage in run.stages.all()))
         ingest.assert_called_once_with(date(2026, 8, 8), fixtures_only=True)
+        self.assertEqual(score.call_count, 2)
+        enrich.assert_called_once_with(date(2026, 8, 8))
 
     def test_detailed_mode_is_explicit_and_uses_detailed_ingestion(self):
         pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
@@ -106,11 +112,12 @@ class DailyPipelineTests(TestCase):
         self.assertEqual(stage.attempt_count, 3)
         self.assertEqual(stage.records_processed, 5)
 
-    def test_failed_ingestion_skips_score_but_keeps_historical_stages(self):
+    def test_failed_ingestion_skips_all_data_dependent_stages_but_keeps_historical_stages(self):
         pipeline = DailyPipeline(max_attempts=2, retry_delay_seconds=0)
         with (
             patch.object(pipeline, "_ingest", side_effect=RuntimeError("API unavailable")),
             patch.object(pipeline, "_score") as score,
+            patch.object(pipeline, "_enrich") as enrich,
             patch.object(pipeline, "_settle", return_value=StageResult(0, "settled")),
             patch.object(pipeline, "_learning", return_value=StageResult(0, "learning")),
         ):
@@ -118,11 +125,16 @@ class DailyPipelineTests(TestCase):
 
         self.assertEqual(run.status, PipelineRun.STATUS_FAILED)
         score.assert_not_called()
+        enrich.assert_not_called()
         ingest = run.stages.get(name="INGEST")
         scoring = run.stages.get(name="SCORE_V8")
+        enrichment = run.stages.get(name="ENRICH_CANDIDATES")
+        rescore = run.stages.get(name="RESCORE_V8")
         self.assertEqual(ingest.status, PipelineStageRun.STATUS_FAILED)
         self.assertEqual(ingest.attempt_count, 2)
         self.assertEqual(scoring.status, PipelineStageRun.STATUS_WARNING)
+        self.assertEqual(enrichment.status, PipelineStageRun.STATUS_WARNING)
+        self.assertEqual(rescore.status, PipelineStageRun.STATUS_WARNING)
         self.assertIn("ingestion failed", scoring.message)
 
     def test_rejects_unknown_mode(self):
