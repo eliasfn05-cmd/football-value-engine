@@ -13,9 +13,13 @@ class Command(BaseCommand):
         parser.add_argument("--date", dest="target_date", help="YYYY-MM-DD. Defaults to today in America/Lima.")
         parser.add_argument(
             "--mode",
-            choices=["full", "morning", "settlement"],
+            choices=["full", "morning", "refresh", "settlement", "detailed"],
             default="full",
-            help="full=all stages, morning=ingest+score, settlement=settle+learning.",
+            help=(
+                "full=fast ingest+score+settle+learning, morning=fast ingest+score, "
+                "refresh=selective candidate enrichment+rescore, "
+                "settlement=settle+learning, detailed=manual full-card enrichment."
+            ),
         )
         parser.add_argument("--attempts", type=int, default=3, help="Maximum attempts per stage (default 3).")
         parser.add_argument("--retry-delay", type=float, default=1.0, help="Seconds between retries (default 1).")
