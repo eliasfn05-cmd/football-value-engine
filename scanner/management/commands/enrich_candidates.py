@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import Q
 from django.utils import timezone
 
 from engine.models import Fixture, OddsSnapshot, Prediction, StandingSnapshot
@@ -16,6 +16,7 @@ from scanner.providers.api_football import APIFootballProvider
 
 MIN_VENUE_SAMPLE = 3
 HISTORY_FETCH_LAST = 20
+HISTORY_WORKERS = 5
 STANDINGS_MAX_AGE_HOURS = 6
 
 
@@ -91,40 +92,54 @@ class Command(BaseCommand):
             f"[enrich] future_candidates={len(fixtures)} min_score={min_score:.1f} limit={limit}"
         )
 
-        # Quality-first backfill. One API call per team is enough to improve both
-        # venue samples because the returned FT history contains home and away games.
         teams_to_backfill = self._teams_missing_venue_history(fixtures)
         self.stdout.write(
-            f"[enrich] history gaps teams={len(teams_to_backfill)} min_venue_sample={MIN_VENUE_SAMPLE}"
+            f"[enrich] history gaps teams={len(teams_to_backfill)} min_venue_sample={MIN_VENUE_SAMPLE} "
+            f"workers={min(HISTORY_WORKERS, max(1, len(teams_to_backfill)))}"
         )
-        for team, before_kickoff, missing_venues in teams_to_backfill:
-            try:
-                history_api_calls += 1
-                raw_history = provider.team_recent_fixtures(team.external_id, last=HISTORY_FETCH_LAST)
-                stored_for_team = 0
-                for raw in raw_history:
-                    fixture_meta = raw.get("fixture") or {}
-                    raw_date = fixture_meta.get("date")
-                    if not raw_date:
-                        continue
+
+        if teams_to_backfill:
+            raw_history_by_external_id: dict[str, dict] = {}
+            workers = min(HISTORY_WORKERS, len(teams_to_backfill))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._fetch_team_history,
+                        team.external_id,
+                        before_kickoff,
+                    ): (team, missing_venues)
+                    for team, before_kickoff, missing_venues in teams_to_backfill
+                }
+                history_api_calls = len(futures)
+                completed = 0
+                for future in as_completed(futures):
+                    team, missing_venues = futures[future]
+                    completed += 1
                     try:
-                        raw_kickoff = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
-                        if timezone.is_naive(raw_kickoff):
-                            raw_kickoff = timezone.make_aware(raw_kickoff)
-                    except (TypeError, ValueError):
-                        continue
-                    if raw_kickoff >= before_kickoff:
-                        continue
-                    ingestion.upsert_fixture(raw)
-                    stored_for_team += 1
-                history_saved += stored_for_team
+                        raw_history = future.result()
+                        accepted = 0
+                        for raw in raw_history:
+                            external_id = str(((raw.get("fixture") or {}).get("id")) or "")
+                            if not external_id:
+                                continue
+                            raw_history_by_external_id[external_id] = raw
+                            accepted += 1
+                        self.stdout.write(
+                            f"[enrich] history fetched {completed}/{len(futures)} team={team.name} "
+                            f"missing={','.join(sorted(missing_venues))} api={len(raw_history)} accepted={accepted}"
+                        )
+                    except Exception as exc:
+                        errors += 1
+                        self.stderr.write(f"[enrich] history error team={team.external_id}: {exc}")
+
+            if raw_history_by_external_id:
+                _fixtures, delta = ingestion._bulk_ingest_fixtures(list(raw_history_by_external_id.values()))
+                history_saved = int(delta.get("created", 0)) + int(delta.get("changed", 0))
                 self.stdout.write(
-                    f"[enrich] history team={team.name} missing={','.join(sorted(missing_venues))} "
-                    f"api={len(raw_history)} stored={stored_for_team}"
+                    f"[enrich] history bulk unique={len(raw_history_by_external_id)} "
+                    f"created={delta.get('created', 0)} changed={delta.get('changed', 0)} "
+                    f"unchanged={delta.get('unchanged', 0)}"
                 )
-            except Exception as exc:
-                errors += 1
-                self.stderr.write(f"[enrich] history error team={team.external_id}: {exc}")
 
         for index, fixture in enumerate(fixtures, start=1):
             self.stdout.write(
@@ -191,12 +206,32 @@ class Command(BaseCommand):
         )
 
     @staticmethod
-    def _teams_missing_venue_history(fixtures: list[Fixture]):
-        """Return each deficient team once, using its earliest shortlisted kickoff.
+    def _fetch_team_history(team_external_id: str, before_kickoff: datetime) -> list[dict]:
+        """Fetch one team's recent FT history using an isolated HTTP session.
 
-        The gate requires >=3 venue-specific historical matches. Fetching recent
-        FT history once per deficient team can fill both home and away samples.
+        Network calls are safe to run concurrently; filtering here keeps future or
+        same-kickoff rows out before they reach the shared bulk persistence phase.
         """
+        provider = APIFootballProvider()
+        raw_history = provider.team_recent_fixtures(team_external_id, last=HISTORY_FETCH_LAST)
+        accepted: list[dict] = []
+        for raw in raw_history:
+            raw_date = ((raw.get("fixture") or {}).get("date"))
+            if not raw_date:
+                continue
+            try:
+                raw_kickoff = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+                if timezone.is_naive(raw_kickoff):
+                    raw_kickoff = timezone.make_aware(raw_kickoff)
+            except (TypeError, ValueError):
+                continue
+            if raw_kickoff < before_kickoff:
+                accepted.append(raw)
+        return accepted
+
+    @staticmethod
+    def _teams_missing_venue_history(fixtures: list[Fixture]):
+        """Return each deficient team once, using its earliest shortlisted kickoff."""
         team_needs: dict[int, dict] = {}
         for fixture in fixtures:
             for team, venue in ((fixture.home_team, "home"), (fixture.away_team, "away")):
