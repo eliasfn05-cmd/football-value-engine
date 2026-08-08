@@ -22,6 +22,7 @@ class BatchFeatureEngineeringService:
         self.venue_sample_size = venue_sample_size
         self.team_ids = {f.home_team_id for f in fixtures} | {f.away_team_id for f in fixtures}
         self.fixture_ids = {f.id for f in fixtures}
+        self.min_kickoff = min((f.kickoff for f in fixtures), default=None)
         self.max_kickoff = max((f.kickoff for f in fixtures), default=None)
         self._history: dict[tuple[int, str], list[Fixture]] = defaultdict(list)
         self._standings: dict[tuple[int, int], StandingSnapshot] = {}
@@ -38,9 +39,11 @@ class BatchFeatureEngineeringService:
         self._preload_odds()
 
     def _preload_history(self) -> None:
+        # Use the first kickoff of the scored batch as the historical cutoff.
+        # This guarantees that no fixture in the batch can see a later result.
         qs = (
             Fixture.objects.filter(Q(home_team_id__in=self.team_ids) | Q(away_team_id__in=self.team_ids))
-            .filter(kickoff__lt=self.max_kickoff, home_goals__isnull=False, away_goals__isnull=False)
+            .filter(kickoff__lt=self.min_kickoff, home_goals__isnull=False, away_goals__isnull=False)
             .select_related("home_team", "away_team")
             .order_by("-kickoff")
         )
@@ -58,7 +61,7 @@ class BatchFeatureEngineeringService:
             StandingSnapshot.objects.filter(
                 competition_id__in=competition_ids,
                 team_id__in=self.team_ids,
-                captured_at__lte=self.max_kickoff,
+                captured_at__lte=self.min_kickoff,
             )
             .order_by("competition_id", "team_id", "-captured_at")
         )
@@ -77,7 +80,6 @@ class BatchFeatureEngineeringService:
         for row in qs.iterator(chunk_size=2000):
             by_team[row.team_id].append(row)
 
-        fixture_by_id = {f.id: f for f in self.fixtures}
         for fixture in self.fixtures:
             for team_id in (fixture.home_team_id, fixture.away_team_id):
                 rows = by_team.get(team_id, [])
