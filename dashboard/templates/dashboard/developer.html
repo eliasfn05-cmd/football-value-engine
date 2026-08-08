@@ -1,0 +1,55 @@
+{% load static %}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Football Value Engine · Developer</title>
+  <link rel="stylesheet" href="{% static 'dashboard/dashboard.css' %}">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">FOOTBALL VALUE ENGINE</p>
+        <h1>Developer Diagnostics</h1>
+        <p class="subtitle">Modelo {{ model_version }} · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
+      </div>
+      <a class="action-button link-button" href="/dashboard/">Volver a Premium</a>
+    </header>
+
+    {% if pipeline %}
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">PIPELINE</p><h2>Última ejecución</h2></div><span class="count-badge">#{{ pipeline.id }}</span></div>
+      <div class="metrics-grid developer-metrics">
+        <article class="metric-card"><span>Estado</span><strong>{{ pipeline.status }}</strong><small>{{ pipeline.target_date|date:"d/m/Y" }}</small></article>
+        <article class="metric-card"><span>Duración</span><strong>{{ pipeline.duration_seconds }} s</strong><small>{{ pipeline.warning_count }} warnings · {{ pipeline.error_count }} errores</small></article>
+        <article class="metric-card"><span>Fixtures</span><strong>{{ pipeline.fixtures_count }}</strong><small>{{ pipeline.predictions_count }} predicciones</small></article>
+        <article class="metric-card"><span>Premium</span><strong>{{ pipeline.premium_count }}</strong><small>{{ pipeline.settled_count }} liquidados</small></article>
+      </div>
+      <div class="mini-list">
+        {% for stage in pipeline.stages %}
+        <div class="mini-row"><div><strong>{{ stage.name }}</strong><small>{{ stage.message|default:"Sin detalle" }}</small></div><div class="right"><strong>{{ stage.status }}</strong><small>{{ stage.attempt_count }} intento(s) · {{ stage.duration_seconds }} s</small></div></div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">DIAGNÓSTICO</p><h2>Resumen de rechazos Premium</h2></div></div>
+      <div class="mini-list">
+        {% for row in rejection_summary %}
+        <div class="mini-row"><div><strong>{{ row.reason }}</strong></div><div class="right"><strong>{{ row.count }}</strong><small>predicciones</small></div></div>
+        {% empty %}<p class="empty">No hay rechazos futuros para diagnosticar.</p>{% endfor %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">DEBUG</p><h2>Candidatos cercanos a Premium</h2></div><span class="count-badge">{{ near_premium|length }}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>Edge</th><th>EV</th><th>Score</th><th>Motivo</th></tr></thead><tbody>{% for row in near_premium %}<tr><td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td><td><span class="market-pill">{{ row.prediction.market }}</span></td><td>{{ row.prediction.probability|floatformat:3 }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td>{% if row.prediction.edge != None %}{{ row.prediction.edge|floatformat:3 }}{% else %}—{% endif %}</td><td>{% if row.prediction.expected_value != None %}{{ row.prediction.expected_value|floatformat:3 }}{% else %}—{% endif %}</td><td><strong>{{ row.prediction.score|floatformat:1 }}</strong></td><td>{{ row.reason }}</td></tr>{% empty %}<tr><td colspan="8" class="empty">No hay candidatos futuros para diagnosticar.</td></tr>{% endfor %}</tbody></table></div>
+    </section>
+
+    <footer>Vista técnica · No usar candidatos rechazados como picks operativos.</footer>
+  </main>
+</body>
+</html>
