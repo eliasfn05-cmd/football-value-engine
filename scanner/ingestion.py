@@ -102,6 +102,136 @@ class DataIngestionService:
             },
         )[0]
 
+    def _bulk_ingest_fixtures(self, raw_fixtures: list[dict]) -> list[Fixture]:
+        """Fast path for morning discovery: persist the complete card in bulk."""
+        if not raw_fixtures:
+            return []
+
+        team_raw_by_id: dict[str, dict] = {}
+        comp_raw_by_key: dict[tuple[str, int | None], dict] = {}
+        fixture_external_ids: list[str] = []
+
+        for raw in raw_fixtures:
+            teams = raw.get("teams") or {}
+            for side in ("home", "away"):
+                team_raw = teams.get(side) or {}
+                if team_raw.get("id") is not None:
+                    team_raw_by_id[str(team_raw.get("id"))] = team_raw
+            league = raw.get("league") or {}
+            if league.get("id") is not None:
+                comp_raw_by_key[(str(league.get("id")), league.get("season"))] = league
+            fixture_meta = raw.get("fixture") or {}
+            if fixture_meta.get("id") is not None:
+                fixture_external_ids.append(str(fixture_meta.get("id")))
+
+        self._log(
+            f"[ingest] bulk prepare teams={len(team_raw_by_id)} competitions={len(comp_raw_by_key)} "
+            f"fixtures={len(fixture_external_ids)}"
+        )
+
+        with transaction.atomic():
+            existing_teams = {
+                team.external_id: team
+                for team in Team.objects.filter(external_id__in=list(team_raw_by_id)).iterator(chunk_size=2000)
+            }
+            missing_teams = [
+                Team(
+                    external_id=external_id,
+                    name=raw.get("name") or "Unknown",
+                    country=raw.get("country") or "",
+                    logo=raw.get("logo") or "",
+                )
+                for external_id, raw in team_raw_by_id.items()
+                if external_id not in existing_teams
+            ]
+            if missing_teams:
+                Team.objects.bulk_create(missing_teams, batch_size=1000, ignore_conflicts=True)
+            team_map = {
+                team.external_id: team
+                for team in Team.objects.filter(external_id__in=list(team_raw_by_id)).iterator(chunk_size=2000)
+            }
+            self._team_cache.update(team_map)
+
+            competition_ids = {external_id for external_id, _season in comp_raw_by_key}
+            existing_competitions = {
+                (comp.external_id, comp.season): comp
+                for comp in Competition.objects.filter(external_id__in=list(competition_ids)).iterator(chunk_size=1000)
+            }
+            missing_competitions = []
+            for key, league in comp_raw_by_key.items():
+                if key in existing_competitions:
+                    continue
+                missing_competitions.append(
+                    Competition(
+                        external_id=key[0],
+                        season=key[1],
+                        name=league.get("name") or "Unknown",
+                        country=league.get("country") or "",
+                        competition_type=league.get("type") or "",
+                        logo=league.get("logo") or "",
+                    )
+                )
+            if missing_competitions:
+                Competition.objects.bulk_create(missing_competitions, batch_size=500, ignore_conflicts=True)
+            competition_map = {
+                (comp.external_id, comp.season): comp
+                for comp in Competition.objects.filter(external_id__in=list(competition_ids)).iterator(chunk_size=1000)
+            }
+            self._competition_cache.update(competition_map)
+
+            fixture_objects: list[Fixture] = []
+            for raw in raw_fixtures:
+                teams = raw.get("teams") or {}
+                fixture_meta = raw.get("fixture") or {}
+                league = raw.get("league") or {}
+                goals = raw.get("goals") or {}
+                status = fixture_meta.get("status") or {}
+                venue = fixture_meta.get("venue") or {}
+                home_raw = teams.get("home") or {}
+                away_raw = teams.get("away") or {}
+                home = team_map.get(str(home_raw.get("id")))
+                away = team_map.get(str(away_raw.get("id")))
+                competition = competition_map.get((str(league.get("id")), league.get("season")))
+                if not home or not away:
+                    continue
+                fixture_objects.append(
+                    Fixture(
+                        external_id=str(fixture_meta.get("id")),
+                        competition=league.get("name") or "Unknown",
+                        competition_ref=competition,
+                        season=league.get("season"),
+                        round=league.get("round") or "",
+                        kickoff=self._kickoff(raw),
+                        home_team=home,
+                        away_team=away,
+                        venue=venue.get("name") or "",
+                        venue_city=venue.get("city") or "",
+                        referee=fixture_meta.get("referee") or "",
+                        status=status.get("short") or "scheduled",
+                        home_goals=goals.get("home"),
+                        away_goals=goals.get("away"),
+                    )
+                )
+
+            Fixture.objects.bulk_create(
+                fixture_objects,
+                batch_size=1000,
+                update_conflicts=True,
+                unique_fields=["external_id"],
+                update_fields=[
+                    "competition", "competition_ref", "season", "round", "kickoff",
+                    "home_team", "away_team", "venue", "venue_city", "referee",
+                    "status", "home_goals", "away_goals",
+                ],
+            )
+
+        fixtures = list(
+            Fixture.objects.filter(external_id__in=fixture_external_ids)
+            .select_related("home_team", "away_team", "competition_ref")
+        )
+        self._log(f"[ingest] bulk persisted {len(fixtures)}/{len(raw_fixtures)} fixtures")
+        return fixtures
+
     def ingest_lineups(self, fixture: Fixture) -> int:
         payload = self.provider.fixture_lineups(fixture.external_id)
         count = 0
@@ -185,34 +315,28 @@ class DataIngestionService:
         raw_fixtures = self.provider.fixtures_by_date(target_date)
         self._log(f"[ingest] API returned {len(raw_fixtures)} fixtures")
 
-        fixtures: list[Fixture] = []
         errors: list[dict] = []
         lineups = 0
         statistics = 0
         standings = 0
-        total = len(raw_fixtures)
 
-        # Keep the fixture discovery write phase in one transaction and reuse
-        # cached Team/Competition instances. This matters when GitHub Actions is
-        # talking to Render PostgreSQL over an external connection.
-        with transaction.atomic():
+        if not include_details:
+            fixtures = self._bulk_ingest_fixtures(raw_fixtures)
+        else:
+            fixtures: list[Fixture] = []
+            total = len(raw_fixtures)
             for index, raw in enumerate(raw_fixtures, start=1):
                 try:
                     fixture = self.upsert_fixture(raw)
                     fixtures.append(fixture)
-                    if include_details:
-                        lineups += self.ingest_lineups(fixture)
-                        if fixture.status in {"FT", "AET", "PEN"}:
-                            statistics += self.ingest_statistics(fixture)
+                    lineups += self.ingest_lineups(fixture)
+                    if fixture.status in {"FT", "AET", "PEN"}:
+                        statistics += self.ingest_statistics(fixture)
                 except Exception as exc:
                     errors.append({"fixture_id": ((raw.get("fixture") or {}).get("id")), "error": str(exc)})
-
                 if index == 1 or index % 100 == 0 or index == total:
-                    self._log(f"[ingest] persisted {index}/{total} fixtures; errors={len(errors)}")
+                    self._log(f"[ingest] detailed persisted {index}/{total}; errors={len(errors)}")
 
-        # A fixtures-only morning scan must remain cheap. Standings require one
-        # API request per competition and belong to the detailed enrichment path.
-        if include_details:
             competitions_seen: set[int] = set()
             for fixture in fixtures:
                 competition = fixture.competition_ref
