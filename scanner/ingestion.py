@@ -170,7 +170,6 @@ class DataIngestionService:
         lineups = 0
         statistics = 0
         standings = 0
-        competitions_seen: set[int] = set()
 
         for raw in raw_fixtures:
             try:
@@ -183,15 +182,20 @@ class DataIngestionService:
             except Exception as exc:
                 errors.append({"fixture_id": ((raw.get("fixture") or {}).get("id")), "error": str(exc)})
 
-        for fixture in fixtures:
-            competition = fixture.competition_ref
-            if not competition or competition.id in competitions_seen:
-                continue
-            competitions_seen.add(competition.id)
-            try:
-                standings += self.ingest_standings(competition)
-            except Exception as exc:
-                errors.append({"competition_id": competition.external_id, "error": str(exc)})
+        # IMPORTANT: a fixtures-only morning scan must remain cheap and fast.
+        # Standings require one API request per competition, so they belong to
+        # the detailed enrichment path, not to the initial fixture discovery.
+        if include_details:
+            competitions_seen: set[int] = set()
+            for fixture in fixtures:
+                competition = fixture.competition_ref
+                if not competition or competition.id in competitions_seen:
+                    continue
+                competitions_seen.add(competition.id)
+                try:
+                    standings += self.ingest_standings(competition)
+                except Exception as exc:
+                    errors.append({"competition_id": competition.external_id, "error": str(exc)})
 
         return {
             "date": target_date.isoformat(),
