@@ -52,7 +52,8 @@ class APIFootballProvider(SportsDataProvider):
         return self._get("odds/bookmakers", {})
 
     def fixtures_by_date(self, target_date: date) -> list[dict]:
-        return self._get("fixtures", {"date": target_date.isoformat()})
+        # Keep API calendar semantics aligned with the application/user timezone.
+        return self._get("fixtures", {"date": target_date.isoformat(), "timezone": "America/Lima"})
 
     def team_recent_fixtures(self, team_id: int | str, *, last: int = 10) -> list[dict]:
         return self._get("fixtures", {"team": team_id, "last": last, "status": "FT"})
