@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from django.db.models import Prefetch
 from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
 from backtesting.services import LearningAnalyticsService
 from engine.models import Prediction
 from engine.score_v8 import V8_MODEL_VERSION
+from scanner.models import PipelineRun
 
 
 @dataclass(frozen=True)
@@ -118,6 +118,26 @@ class DashboardService:
         rows.sort(key=lambda row: (row["sample_size"], row["profit_units"]), reverse=True)
         return rows[:limit]
 
+    def pipeline_status(self) -> dict[str, Any] | None:
+        run = PipelineRun.objects.prefetch_related("stages").first()
+        if run is None:
+            return None
+        return {
+            "id": run.id,
+            "target_date": run.target_date,
+            "status": run.status,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "duration_seconds": run.duration_seconds,
+            "fixtures_count": run.fixtures_count,
+            "predictions_count": run.predictions_count,
+            "premium_count": run.premium_count,
+            "settled_count": run.settled_count,
+            "warning_count": run.warning_count,
+            "error_count": run.error_count,
+            "stages": list(run.stages.all()),
+        }
+
     def build(self) -> dict[str, Any]:
         return {
             "model_version": self.model_version,
@@ -126,5 +146,6 @@ class DashboardService:
             "recent_results": self.recent_results(),
             "market_performance": self.market_performance(),
             "rule_performance": self.rule_performance(),
+            "pipeline": self.pipeline_status(),
             "generated_at": timezone.now(),
         }
