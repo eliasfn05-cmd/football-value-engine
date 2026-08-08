@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from engine.competition_quality import classify_competition
-from engine.models import DailyPremiumSelection, Fixture, FixtureScoreState, Prediction, Team
+from engine.models import Competition, DailyPremiumSelection, Fixture, FixtureScoreState, Prediction, Team
 from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.management.commands.score_v8 import Command as ScoreCommand
@@ -54,6 +54,29 @@ class Sprint62CompetitionQualityTests(TestCase):
         self.assertTrue(quality.excluded)
         self.assertEqual(quality.level, 4)
         self.assertEqual(quality.reason, "friendly_or_exhibition")
+
+    def test_uses_competition_ref_name_even_when_fixture_name_is_generic(self):
+        ref = Competition.objects.create(
+            external_id="friendly-ref",
+            name="Friendlies Clubs",
+            country="World",
+            season=2026,
+            competition_type="Cup",
+        )
+        fixture = Fixture.objects.create(
+            external_id="generic-world-friendly",
+            competition="World",
+            competition_ref=ref,
+            season=2026,
+            round="Club Friendlies",
+            kickoff=self.kickoff,
+            home_team=self.home,
+            away_team=self.away,
+            status="NS",
+        )
+        quality = classify_competition(fixture)
+        self.assertTrue(quality.excluded)
+        self.assertEqual(quality.label, "TIER_4_EXCLUDED")
 
     def test_classifies_elite_official_and_development_competitions(self):
         elite = classify_competition(self._fixture("elite", "UEFA Champions League"))
