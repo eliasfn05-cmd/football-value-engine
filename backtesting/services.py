@@ -14,6 +14,7 @@ from .models import LearningSnapshot, PredictionOutcome
 
 
 SETTLEMENT_BATCH_SIZE = 1000
+LEARNING_BATCH_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -91,12 +92,7 @@ class SettlementService:
         return outcome
 
     def settle_finished(self, *, model_version: str | None = None) -> dict[str, int]:
-        """Bulk settle only finished predictions that are not already settled.
-
-        This is the production fast path. It avoids one update_or_create per
-        historical prediction and keeps repeated pipeline runs effectively
-        incremental.
-        """
+        """Bulk settle only finished predictions that are not already settled."""
         qs = Prediction.objects.select_related("fixture").filter(
             fixture__home_goals__isnull=False,
             fixture__away_goals__isnull=False,
@@ -282,24 +278,26 @@ class LearningAnalyticsService:
         return [self._summary(scope, rows) for scope, rows in sorted(groups.items())]
 
     def persist_report(self, *, model_version: str, premium_only: bool = False) -> list[LearningSnapshot]:
-        snapshots: list[LearningSnapshot] = []
-        for summary in self.report(model_version=model_version, premium_only=premium_only):
-            snapshots.append(
-                LearningSnapshot.objects.create(
-                    model_version=model_version,
-                    scope=summary.scope,
-                    sample_size=summary.sample_size,
-                    wins=summary.wins,
-                    losses=summary.losses,
-                    voids=summary.voids,
-                    win_rate=summary.win_rate,
-                    roi=summary.roi,
-                    yield_pct=summary.yield_pct,
-                    avg_probability=summary.avg_probability,
-                    avg_edge=summary.avg_edge,
-                    avg_expected_value=summary.avg_expected_value,
-                    total_profit_units=summary.total_profit_units,
-                    metadata={"premium_only": premium_only},
-                )
+        summaries = self.report(model_version=model_version, premium_only=premium_only)
+        snapshots = [
+            LearningSnapshot(
+                model_version=model_version,
+                scope=summary.scope,
+                sample_size=summary.sample_size,
+                wins=summary.wins,
+                losses=summary.losses,
+                voids=summary.voids,
+                win_rate=summary.win_rate,
+                roi=summary.roi,
+                yield_pct=summary.yield_pct,
+                avg_probability=summary.avg_probability,
+                avg_edge=summary.avg_edge,
+                avg_expected_value=summary.avg_expected_value,
+                total_profit_units=summary.total_profit_units,
+                metadata={"premium_only": premium_only},
             )
+            for summary in summaries
+        ]
+        if snapshots:
+            LearningSnapshot.objects.bulk_create(snapshots, batch_size=LEARNING_BATCH_SIZE)
         return snapshots
