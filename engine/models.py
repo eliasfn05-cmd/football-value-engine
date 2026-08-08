@@ -164,3 +164,35 @@ class FixtureScoreState(models.Model):
         indexes = [
             models.Index(fields=["model_version", "scored_at"], name="scorestate_model_time_idx"),
         ]
+
+
+class DailyPremiumSelection(models.Model):
+    """Operational Sprint 6 selection, isolated from raw model tiers.
+
+    The raw Prediction remains immutable evidence for backtesting. This table
+    stores the daily ranked shortlist that the operational dashboard presents.
+    """
+
+    TIER_A = "A"
+    TIER_B = "B"
+    TIER_C = "C"
+    TIER_CHOICES = [(TIER_A, "Premium A"), (TIER_B, "Premium B"), (TIER_C, "Premium C")]
+
+    target_date = models.DateField(db_index=True)
+    prediction = models.ForeignKey(Prediction, on_delete=models.CASCADE, related_name="daily_selections")
+    rank = models.PositiveSmallIntegerField()
+    premium_tier = models.CharField(max_length=1, choices=TIER_CHOICES)
+    premium_rank_score = models.DecimalField(max_digits=5, decimal_places=2)
+    model_version = models.CharField(max_length=30)
+    rationale = models.JSONField(default=dict, blank=True)
+    selected_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["target_date", "rank"], name="uniq_daily_premium_rank"),
+            models.UniqueConstraint(fields=["target_date", "prediction"], name="uniq_daily_premium_prediction"),
+        ]
+        indexes = [
+            models.Index(fields=["target_date", "model_version", "rank"], name="premium_date_model_rank_idx"),
+        ]
+        ordering = ["target_date", "rank"]
