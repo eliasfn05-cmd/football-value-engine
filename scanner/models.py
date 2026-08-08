@@ -36,6 +36,52 @@ class PipelineRun(models.Model):
         return f"Pipeline {self.target_date} {self.status}"
 
 
+class PremiumGenerationJob(models.Model):
+    STATUS_QUEUED = "QUEUED"
+    STATUS_DISPATCHED = "DISPATCHED"
+    STATUS_RUNNING = "RUNNING"
+    STATUS_SUCCESS = "SUCCESS"
+    STATUS_PARTIAL = "PARTIAL"
+    STATUS_FAILED = "FAILED"
+    STATUS_CHOICES = [
+        (STATUS_QUEUED, "Queued"),
+        (STATUS_DISPATCHED, "Dispatched"),
+        (STATUS_RUNNING, "Running"),
+        (STATUS_SUCCESS, "Success"),
+        (STATUS_PARTIAL, "Partial"),
+        (STATUS_FAILED, "Failed"),
+    ]
+    ACTIVE_STATUSES = (STATUS_QUEUED, STATUS_DISPATCHED, STATUS_RUNNING)
+
+    target_date = models.DateField(db_index=True)
+    mode = models.CharField(max_length=16, default="full")
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_QUEUED, db_index=True)
+    pipeline = models.OneToOneField(
+        PipelineRun,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="generation_job",
+    )
+    current_stage = models.CharField(max_length=32, blank=True)
+    progress_pct = models.PositiveSmallIntegerField(default=0)
+    message = models.CharField(max_length=255, blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+        indexes = [
+            models.Index(fields=["target_date", "status"], name="premium_job_date_status_idx"),
+        ]
+
+    def __str__(self):
+        return f"Premium job #{self.pk} {self.target_date} {self.status}"
+
+
 class PipelineStageRun(models.Model):
     STATUS_RUNNING = "RUNNING"
     STATUS_SUCCESS = "SUCCESS"
