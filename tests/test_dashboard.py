@@ -75,6 +75,6 @@ class DashboardTests(TestCase):
         )
 
         response = self.client.get("/dashboard/")
-        self.assertContains(response, "100.0%")
-        self.assertContains(response, "0.80 u")
+        self.assertContains(response, "100,0%")
+        self.assertContains(response, "0,80 u")
         self.assertContains(response, "WIN")
