@@ -27,8 +27,7 @@ def _select_bookmaker(payload: list[dict], preferred: str | None = None) -> Opti
     return None
 
 
-def parse_quotes(payload: list[dict], preferred_bookmaker: str | None = None) -> dict[str, MarketQuote | None]:
-    bookmaker = _select_bookmaker(payload, preferred_bookmaker)
+def _quotes_from_bookmaker(bookmaker: dict | None) -> dict[str, MarketQuote | None]:
     if not bookmaker:
         return {"btts": None, "over25": None}
 
@@ -59,3 +58,36 @@ def parse_quotes(payload: list[dict], preferred_bookmaker: str | None = None) ->
                     over_quote = MarketQuote(decimal_odds=decimal, bookmaker=bookmaker_name)
 
     return {"btts": btts_quote, "over25": over_quote}
+
+
+def parse_quotes(
+    payload: list[dict],
+    preferred_bookmaker: str | None = None,
+    *,
+    allow_fallback: bool = False,
+) -> dict[str, MarketQuote | None]:
+    """Parse BTTS/Over 2.5 quotes, preferring the configured bookmaker.
+
+    By default this remains strict: if the preferred bookmaker is absent, no
+    quote is returned. Selective production enrichment may opt into
+    ``allow_fallback=True`` so the model can use a clearly-labelled reference
+    bookmaker instead of losing edge/EV entirely for that fixture.
+    """
+    preferred = _select_bookmaker(payload, preferred_bookmaker)
+    preferred_quotes = _quotes_from_bookmaker(preferred)
+    if preferred is not None:
+        return preferred_quotes
+    if not allow_fallback:
+        return {"btts": None, "over25": None}
+
+    best_quotes = {"btts": None, "over25": None}
+    best_coverage = 0
+    for bookmaker in _candidate_bookmakers(payload):
+        quotes = _quotes_from_bookmaker(bookmaker)
+        coverage = int(quotes["btts"] is not None) + int(quotes["over25"] is not None)
+        if coverage > best_coverage:
+            best_quotes = quotes
+            best_coverage = coverage
+            if coverage == 2:
+                break
+    return best_quotes
