@@ -31,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      PYTHONUNBUFFERED: "1"
       SECRET_KEY: scheduler-cli-only-key
       DEBUG: "False"
       ALLOWED_HOSTS: localhost,127.0.0.1
