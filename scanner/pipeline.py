@@ -24,9 +24,18 @@ class StageResult:
 
 
 class DailyPipeline:
-    """Production orchestrator for the football-value workflow."""
+    """Production orchestrator for the football-value workflow.
 
-    MODES = {"full", "morning", "settlement"}
+    Modes:
+    - morning: fast bulk fixture ingestion + V8 scoring.
+    - full: fast bulk ingestion + scoring + settlement + learning.
+    - settlement: settlement + learning only.
+    - detailed: legacy/manual full-card enrichment. This mode is intentionally
+      not used by the normal scheduler because per-fixture API calls do not
+      scale to a 1,000+ match daily card.
+    """
+
+    MODES = {"full", "morning", "settlement", "detailed"}
 
     def __init__(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0):
         self.max_attempts = max(1, int(max_attempts))
@@ -39,8 +48,6 @@ class DailyPipeline:
 
     @staticmethod
     def _run_command(name: str, **options) -> None:
-        # Stream nested management-command output directly to the parent
-        # process so GitHub Actions shows live progress instead of buffering it.
         call_command(name, stdout=sys.stdout, stderr=sys.stderr, **options)
 
     def _ingest(self, target_date: date, *, fixtures_only: bool = False) -> StageResult:
@@ -52,7 +59,11 @@ class DailyPipeline:
         start, end = self._date_bounds(target_date)
         count = Fixture.objects.filter(kickoff__gte=start, kickoff__lt=end).count()
         mode = "fast" if fixtures_only else "detailed"
-        return StageResult(count, f"{count} fixtures stored ({mode} ingestion)", {"fixtures": count, "ingestion_mode": mode})
+        return StageResult(
+            count,
+            f"{count} fixtures stored ({mode} ingestion)",
+            {"fixtures": count, "ingestion_mode": mode},
+        )
 
     def _score(self, target_date: date) -> StageResult:
         self._run_command(
@@ -68,7 +79,11 @@ class DailyPipeline:
         )
         count = qs.count()
         premium = qs.filter(tier="TIER_A").count()
-        return StageResult(count, f"{count} predictions; {premium} premium", {"predictions": count, "premium": premium})
+        return StageResult(
+            count,
+            f"{count} predictions; {premium} premium",
+            {"predictions": count, "premium": premium},
+        )
 
     def _settle(self, target_date: date) -> StageResult:
         before = PredictionOutcome.objects.filter(prediction__model_version=V8_MODEL_VERSION).count()
@@ -78,7 +93,11 @@ class DailyPipeline:
         total_settled = PredictionOutcome.objects.filter(
             prediction__model_version=V8_MODEL_VERSION,
         ).exclude(result=PredictionOutcome.RESULT_PENDING).count()
-        return StageResult(processed, f"{processed} newly settled; {total_settled} total", {"new": processed, "total": total_settled})
+        return StageResult(
+            processed,
+            f"{processed} newly settled; {total_settled} total",
+            {"new": processed, "total": total_settled},
+        )
 
     def _learning(self, target_date: date) -> StageResult:
         self._run_command("learning_report", model_version=V8_MODEL_VERSION, premium_only=True)
@@ -86,9 +105,20 @@ class DailyPipeline:
             prediction__model_version=V8_MODEL_VERSION,
             prediction__tier="TIER_A",
         ).exclude(result=PredictionOutcome.RESULT_PENDING).count()
-        return StageResult(settled, f"learning report refreshed from {settled} premium outcomes", {"premium_outcomes": settled})
+        return StageResult(
+            settled,
+            f"learning report refreshed from {settled} premium outcomes",
+            {"premium_outcomes": settled},
+        )
 
-    def _run_stage(self, pipeline: PipelineRun, name: str, fn: Callable[[], StageResult], *, required: bool) -> PipelineStageRun:
+    def _run_stage(
+        self,
+        pipeline: PipelineRun,
+        name: str,
+        fn: Callable[[], StageResult],
+        *,
+        required: bool,
+    ) -> PipelineStageRun:
         stage = PipelineStageRun.objects.create(pipeline=pipeline, name=name)
         started = timezone.now()
         last_error = None
@@ -108,7 +138,10 @@ class DailyPipeline:
                 stage.message = result.message[:255]
                 stage.details = result.details or {}
                 stage.save()
-                print(f"[pipeline #{pipeline.id}] DONE {name}: {result.message} ({stage.duration_seconds}s)", flush=True)
+                print(
+                    f"[pipeline #{pipeline.id}] DONE {name}: {result.message} ({stage.duration_seconds}s)",
+                    flush=True,
+                )
                 return stage
             except Exception as exc:
                 last_error = exc
@@ -144,8 +177,18 @@ class DailyPipeline:
                 ("SETTLE", lambda: self._settle(target_date), False),
                 ("LEARNING", lambda: self._learning(target_date), False),
             ]
+        if mode == "detailed":
+            return [
+                ("INGEST", lambda: self._ingest(target_date, fixtures_only=False), True),
+                ("SCORE_V8", lambda: self._score(target_date), True),
+                ("SETTLE", lambda: self._settle(target_date), False),
+                ("LEARNING", lambda: self._learning(target_date), False),
+            ]
+        # Production full mode intentionally uses the same fast bulk ingestion
+        # as morning mode. Context enrichment belongs to a selective candidate
+        # refresh, never to the entire 1,000+ fixture card.
         return [
-            ("INGEST", lambda: self._ingest(target_date, fixtures_only=False), True),
+            ("INGEST", lambda: self._ingest(target_date, fixtures_only=True), True),
             ("SCORE_V8", lambda: self._score(target_date), True),
             ("SETTLE", lambda: self._settle(target_date), False),
             ("LEARNING", lambda: self._learning(target_date), False),
