@@ -100,7 +100,7 @@ class DailyPipeline:
                 stage.details = result.details or {}
                 stage.save()
                 return stage
-            except Exception as exc:  # stage boundary must capture provider/DB/command failures
+            except Exception as exc:
                 last_error = exc
                 if attempt < self.max_attempts and self.retry_delay_seconds:
                     time_module.sleep(self.retry_delay_seconds)
@@ -130,17 +130,29 @@ class DailyPipeline:
         ]
 
         required_failed = False
+        ingest_failed = False
         warning_count = 0
         error_count = 0
         for name, fn, required in stages:
+            if name == "SCORE_V8" and ingest_failed:
+                PipelineStageRun.objects.create(
+                    pipeline=pipeline,
+                    name=name,
+                    status=PipelineStageRun.STATUS_WARNING,
+                    attempt_count=0,
+                    finished_at=timezone.now(),
+                    message="skipped because ingestion failed",
+                    details={"dependency": "INGEST"},
+                )
+                warning_count += 1
+                continue
+
             stage = self._run_stage(pipeline, name, fn, required=required)
             if stage.status == PipelineStageRun.STATUS_FAILED:
                 required_failed = True
                 error_count += 1
-                # SCORE depends on successful ingestion. Do not continue into it
-                # after a required failure, but keep non-critical historical tasks.
                 if name == "INGEST":
-                    continue
+                    ingest_failed = True
             elif stage.status == PipelineStageRun.STATUS_WARNING:
                 warning_count += 1
 
