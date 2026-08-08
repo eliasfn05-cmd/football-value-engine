@@ -21,13 +21,40 @@ services:
         sync: false
       - key: PREFERRED_BOOKMAKER
         value: Betano
+      - key: APP_TIMEZONE
+        value: America/Lima
       - key: MODEL_VERSION
-        value: "7.0"
+        value: "7.3"
       - key: MIN_EDGE
         value: "0.06"
       - key: MIN_EV
         value: "0.08"
     dockerCommand: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+
+  - type: cron
+    name: football-value-engine-daily-scan
+    runtime: docker
+    schedule: "0 11 * * *"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: football-value-engine-db
+          property: connectionString
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: PREFERRED_BOOKMAKER
+        value: Betano
+      - key: APP_TIMEZONE
+        value: America/Lima
+      - key: MODEL_VERSION
+        value: "7.3"
+      - key: MIN_EDGE
+        value: "0.06"
+      - key: MIN_EV
+        value: "0.08"
+      - key: SECRET_KEY
+        generateValue: true
+    dockerCommand: python manage.py scan_daily
 
 databases:
   - name: football-value-engine-db
