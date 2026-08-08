@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -18,6 +19,9 @@ MIN_VENUE_SAMPLE = 3
 HISTORY_FETCH_LAST = 20
 HISTORY_WORKERS = 5
 STANDINGS_MAX_AGE_HOURS = 6
+INTERACTIVE_LIMIT = 8
+INTERACTIVE_MIN_SCORE = 70.0
+INTERACTIVE_LINEUP_WINDOW_HOURS = 2
 
 
 class Command(BaseCommand):
@@ -32,14 +36,21 @@ class Command(BaseCommand):
         parser.add_argument("--limit", type=int, default=20, help="Maximum unique fixtures to enrich.")
         parser.add_argument("--min-score", type=float, default=50.0, help="Minimum V8 score to enter shortlist.")
 
+    @staticmethod
+    def _interactive_fast_enabled() -> bool:
+        return os.getenv("PREMIUM_INTERACTIVE_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
+
     def handle(self, *args, **options):
         try:
             target_date = date.fromisoformat(options["target_date"])
         except ValueError as exc:
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
-        limit = max(1, min(int(options["limit"]), 50))
-        min_score = float(options["min_score"])
+        interactive_fast = self._interactive_fast_enabled()
+        requested_limit = max(1, min(int(options["limit"]), 50))
+        requested_min_score = float(options["min_score"])
+        limit = min(requested_limit, INTERACTIVE_LIMIT) if interactive_fast else requested_limit
+        min_score = max(requested_min_score, INTERACTIVE_MIN_SCORE) if interactive_fast else requested_min_score
         start = timezone.make_aware(datetime.combine(target_date, time.min))
         end = start + timedelta(days=1)
         now = timezone.now()
@@ -89,13 +100,19 @@ class Command(BaseCommand):
         no_odds_coverage = 0
 
         self.stdout.write(
-            f"[enrich] future_candidates={len(fixtures)} min_score={min_score:.1f} limit={limit}"
+            f"[enrich] future_candidates={len(fixtures)} min_score={min_score:.1f} limit={limit} "
+            f"interactive_fast={int(interactive_fast)}"
         )
 
-        teams_to_backfill = self._teams_missing_venue_history(fixtures)
+        # Interactive dashboard generation must be responsive. The scheduled
+        # pipeline is responsible for filling historical venue gaps. If history
+        # is still insufficient, V8's data-quality gates reject the candidate
+        # rather than making the user wait for dozens of historical API calls.
+        teams_to_backfill = [] if interactive_fast else self._teams_missing_venue_history(fixtures)
         self.stdout.write(
             f"[enrich] history gaps teams={len(teams_to_backfill)} min_venue_sample={MIN_VENUE_SAMPLE} "
-            f"workers={min(HISTORY_WORKERS, max(1, len(teams_to_backfill)))}"
+            f"workers={min(HISTORY_WORKERS, max(1, len(teams_to_backfill)))} "
+            f"skipped_interactive={int(interactive_fast)}"
         )
 
         if teams_to_backfill:
@@ -169,14 +186,23 @@ class Command(BaseCommand):
                 no_odds_coverage += 1
                 self.stderr.write(f"[enrich] odds error fixture={fixture.external_id}: {exc}")
 
-            try:
-                lineups_saved += ingestion.ingest_lineups(fixture)
-            except Exception as exc:
-                errors += 1
-                self.stderr.write(f"[enrich] lineup error fixture={fixture.external_id}: {exc}")
+            # Official lineups are usually unavailable many hours before kickoff.
+            # Avoid a low-value API call in interactive mode unless kickoff is near.
+            should_fetch_lineup = (
+                not interactive_fast
+                or fixture.kickoff <= now + timedelta(hours=INTERACTIVE_LINEUP_WINDOW_HOURS)
+            )
+            if should_fetch_lineup:
+                try:
+                    lineups_saved += ingestion.ingest_lineups(fixture)
+                except Exception as exc:
+                    errors += 1
+                    self.stderr.write(f"[enrich] lineup error fixture={fixture.external_id}: {exc}")
+            else:
+                self.stdout.write(f"[enrich] lineup skipped fixture={fixture.external_id} kickoff_not_near")
 
             competition = fixture.competition_ref
-            if competition and competition.id not in standings_seen:
+            if not interactive_fast and competition and competition.id not in standings_seen:
                 standings_seen.add(competition.id)
                 try:
                     recent_cutoff = timezone.now() - timedelta(hours=STANDINGS_MAX_AGE_HOURS)
