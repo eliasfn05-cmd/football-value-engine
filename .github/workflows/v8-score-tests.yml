@@ -1,0 +1,38 @@
+name: v8-score-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  v8-score-test:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: ci-secret
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: sqlite:///ci-v8.sqlite3
+      PREFERRED_BOOKMAKER: Betano
+      MIN_EDGE: "0.06"
+      MIN_EV: "0.08"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify migrations are synchronized
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run V8 feature and scoring tests
+        run: python manage.py test tests.test_v8_features tests.test_v8_score_engine
