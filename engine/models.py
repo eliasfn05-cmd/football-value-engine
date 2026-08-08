@@ -140,3 +140,27 @@ class Prediction(models.Model):
                 name="engine_pred_model_tier_idx",
             )
         ]
+
+
+class FixtureScoreState(models.Model):
+    """Last feature fingerprint scored for a fixture/model pair.
+
+    Sprint 5 uses this as the safe incremental checkpoint: a fixture is only
+    re-evaluated when the exact persisted feature vector consumed by V8 changes.
+    """
+
+    fixture = models.ForeignKey(Fixture, on_delete=models.CASCADE, related_name="score_states")
+    model_version = models.CharField(max_length=30)
+    feature_fingerprint = models.CharField(max_length=64)
+    scored_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["fixture", "model_version"],
+                name="uniq_fixture_model_score_state",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["model_version", "scored_at"], name="scorestate_model_time_idx"),
+        ]
