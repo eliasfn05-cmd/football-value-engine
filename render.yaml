@@ -2,9 +2,8 @@ services:
   - type: web
     name: football-value-engine
     runtime: docker
-    plan: starter
+    plan: free
     healthCheckPath: /health/
-    preDeployCommand: python manage.py migrate --noinput
     envVars:
       - key: SECRET_KEY
         generateValue: true
@@ -30,38 +29,8 @@ services:
         value: "0.06"
       - key: MIN_EV
         value: "0.08"
-    dockerCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
-
-  - type: cron
-    name: football-value-engine-daily-scan
-    runtime: docker
-    plan: starter
-    schedule: "0 11 * * *"
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: football-value-engine-db
-          property: connectionString
-      - key: API_FOOTBALL_KEY
-        sync: false
-      - key: PREFERRED_BOOKMAKER
-        value: Betano
-      - key: APP_TIMEZONE
-        value: America/Lima
-      - key: MODEL_VERSION
-        value: "7.3"
-      - key: MIN_EDGE
-        value: "0.06"
-      - key: MIN_EV
-        value: "0.08"
-      - key: SECRET_KEY
-        generateValue: true
-      - key: DEBUG
-        value: "False"
-    dockerCommand: python manage.py scan_daily
+    dockerCommand: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
 
 databases:
   - name: football-value-engine-db
-    plan: basic-256mb
-    databaseName: football_value_engine
-    user: football_value_engine
+    plan: free
