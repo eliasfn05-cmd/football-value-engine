@@ -24,6 +24,10 @@ on:
         description: "Optional date YYYY-MM-DD; blank = current date in America/Lima"
         required: false
         type: string
+      generation_job_id:
+        description: "Optional dashboard PremiumGenerationJob id"
+        required: false
+        type: string
 
 concurrency:
   group: football-value-daily-pipeline
@@ -77,6 +81,7 @@ jobs:
         env:
           MANUAL_MODE: ${{ github.event.inputs.mode }}
           MANUAL_DATE: ${{ github.event.inputs.target_date }}
+          GENERATION_JOB_ID: ${{ github.event.inputs.generation_job_id }}
           SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -97,15 +102,22 @@ jobs:
 
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
-          echo "Resolved mode=$MODE target_date=$TARGET_DATE"
+          echo "generation_job_id=${GENERATION_JOB_ID:-}" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$MODE target_date=$TARGET_DATE generation_job_id=${GENERATION_JOB_ID:-none}"
 
       - name: Verify production schema is current
         run: python manage.py migrate --check
 
       - name: Run scheduled pipeline
-        run: >-
-          python manage.py daily_pipeline
-          --mode "${{ steps.schedule.outputs.mode }}"
-          --date "${{ steps.schedule.outputs.target_date }}"
-          --attempts 3
-          --retry-delay 5
+        shell: bash
+        run: |
+          EXTRA_ARGS=()
+          if [ -n "${{ steps.schedule.outputs.generation_job_id }}" ]; then
+            EXTRA_ARGS+=(--generation-job-id "${{ steps.schedule.outputs.generation_job_id }}")
+          fi
+          python manage.py daily_pipeline \
+            --mode "${{ steps.schedule.outputs.mode }}" \
+            --date "${{ steps.schedule.outputs.target_date }}" \
+            --attempts 3 \
+            --retry-delay 5 \
+            "${EXTRA_ARGS[@]}"
