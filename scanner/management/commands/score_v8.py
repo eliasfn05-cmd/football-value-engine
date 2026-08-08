@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -12,7 +13,10 @@ from engine.models import Fixture, Prediction
 from engine.score_v8 import ScoreEngineV8, V8_MODEL_VERSION
 
 
-PERSIST_BATCH_SIZE = 200
+# 500 keeps PostgreSQL statements bounded while cutting round trips versus the
+# previous 200-row batches. More importantly, unchanged rows never reach this
+# persistence path at all.
+PERSIST_BATCH_SIZE = 500
 
 
 class Command(BaseCommand):
@@ -23,6 +27,35 @@ class Command(BaseCommand):
         parser.add_argument("--date", dest="target_date", help="YYYY-MM-DD")
         parser.add_argument("--premium-only", action="store_true")
         parser.add_argument("--summary-only", action="store_true", help="Emit only summary/premium rows for batch runs.")
+
+    @staticmethod
+    def _decimal(value, places: int):
+        if value is None:
+            return None
+        quantum = Decimal("1").scaleb(-places)
+        return Decimal(str(value)).quantize(quantum, rounding=ROUND_HALF_UP)
+
+    @classmethod
+    def _prediction_defaults(cls, evaluation):
+        """Normalize values exactly as Prediction DecimalFields store them.
+
+        Comparing normalized values lets repeated daily/refresh runs skip rows
+        whose persisted representation is already identical.
+        """
+        return {
+            "probability": cls._decimal(evaluation["probability"], 5),
+            "fair_odds": cls._decimal(evaluation["fair_odds"], 3),
+            "market_odds": cls._decimal(evaluation["market_odds"], 3),
+            "edge": cls._decimal(evaluation["edge"], 5),
+            "expected_value": cls._decimal(evaluation["expected_value"], 5),
+            "score": cls._decimal(evaluation["score"], 2),
+            "tier": evaluation["tier"],
+            "reasons": evaluation["reasons"],
+        }
+
+    @staticmethod
+    def _prediction_changed(pred: Prediction, defaults: dict) -> bool:
+        return any(getattr(pred, field) != value for field, value in defaults.items())
 
     def handle(self, *args, **options):
         fixture_id = options.get("fixture_id")
@@ -75,6 +108,7 @@ class Command(BaseCommand):
 
         to_create: list[Prediction] = []
         to_update: list[Prediction] = []
+        unchanged = 0
         premium: list[dict] = []
         rows: list[dict] = []
 
@@ -84,16 +118,7 @@ class Command(BaseCommand):
 
             for evaluation in result.values():
                 key = (fixture.id, evaluation["market"], evaluation["selection"])
-                defaults = {
-                    "probability": evaluation["probability"],
-                    "fair_odds": evaluation["fair_odds"],
-                    "market_odds": evaluation["market_odds"],
-                    "edge": evaluation["edge"],
-                    "expected_value": evaluation["expected_value"],
-                    "score": evaluation["score"],
-                    "tier": evaluation["tier"],
-                    "reasons": evaluation["reasons"],
-                }
+                defaults = self._prediction_defaults(evaluation)
                 pred = existing.get(key)
                 if pred is None:
                     pred = Prediction(
@@ -104,10 +129,12 @@ class Command(BaseCommand):
                         **defaults,
                     )
                     to_create.append(pred)
-                else:
+                elif self._prediction_changed(pred, defaults):
                     for field, value in defaults.items():
                         setattr(pred, field, value)
                     to_update.append(pred)
+                else:
+                    unchanged += 1
 
                 if evaluation["tier"] == "TIER_A":
                     premium.append({
@@ -129,8 +156,8 @@ class Command(BaseCommand):
             "expected_value", "score", "tier", "reasons",
         ]
         self.stdout.write(
-            f"[score_v8] chunked persist create={len(to_create)} update={len(to_update)} "
-            f"batch_size={PERSIST_BATCH_SIZE}",
+            f"[score_v8] persist plan create={len(to_create)} update={len(to_update)} "
+            f"unchanged={unchanged} batch_size={PERSIST_BATCH_SIZE}",
             ending="\n",
         )
 
@@ -169,7 +196,7 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"[score_v8] complete fixtures={len(fixtures)} premium={len(premium)} "
-                f"created={len(to_create)} updated={len(to_update)}"
+                f"created={len(to_create)} updated={len(to_update)} unchanged={unchanged}"
             )
         )
 
