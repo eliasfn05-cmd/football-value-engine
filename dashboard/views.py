@@ -2,6 +2,7 @@ import hmac
 import json
 import os
 import time
+from datetime import timedelta
 
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -15,6 +16,31 @@ from .pipeline_trigger import GitHubPipelineTrigger
 from .services import DashboardService
 
 
+def _expire_stale_generation_jobs() -> None:
+    now = timezone.now()
+    dispatch_cutoff = now - timedelta(minutes=15)
+    running_cutoff = now - timedelta(minutes=50)
+    stale_dispatched = PremiumGenerationJob.objects.filter(
+        status__in=[PremiumGenerationJob.STATUS_QUEUED, PremiumGenerationJob.STATUS_DISPATCHED],
+        requested_at__lt=dispatch_cutoff,
+    )
+    stale_running = PremiumGenerationJob.objects.filter(
+        status=PremiumGenerationJob.STATUS_RUNNING,
+        started_at__lt=running_cutoff,
+    )
+    for qs, message in (
+        (stale_dispatched, "El worker no reclamó el trabajo a tiempo."),
+        (stale_running, "La generación excedió el tiempo máximo permitido."),
+    ):
+        qs.update(
+            status=PremiumGenerationJob.STATUS_FAILED,
+            current_stage="TIMEOUT",
+            progress_pct=100,
+            message=message,
+            finished_at=now,
+        )
+
+
 def health(request):
     return JsonResponse({
         "status": "ok",
@@ -24,6 +50,7 @@ def health(request):
 
 
 def dashboard_home(request):
+    _expire_stale_generation_jobs()
     context = DashboardService().build()
     context["pipeline_trigger_configured"] = GitHubPipelineTrigger().configured and bool(
         os.getenv("PIPELINE_TRIGGER_PIN", "").strip()
@@ -43,6 +70,7 @@ def developer_dashboard(request):
 
 @require_POST
 def generate_premium_picks(request):
+    _expire_stale_generation_jobs()
     expected_pin = os.getenv("PIPELINE_TRIGGER_PIN", "").strip()
     if not expected_pin:
         return JsonResponse({"ok": False, "message": "PIPELINE_TRIGGER_PIN no está configurado en Render."}, status=503)
@@ -92,9 +120,10 @@ def generate_premium_picks(request):
     if not result.accepted:
         job.status = PremiumGenerationJob.STATUS_FAILED
         job.current_stage = "DISPATCH"
+        job.progress_pct = 100
         job.message = result.message[:255]
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "current_stage", "message", "finished_at"])
+        job.save(update_fields=["status", "current_stage", "progress_pct", "message", "finished_at"])
         return JsonResponse({"ok": False, "message": result.message, "job_id": job.id}, status=502)
 
     job.status = PremiumGenerationJob.STATUS_DISPATCHED
@@ -114,6 +143,7 @@ def generate_premium_picks(request):
 
 @require_GET
 def premium_generation_status(request):
+    _expire_stale_generation_jobs()
     raw_job_id = request.GET.get("job_id")
     job = None
     if raw_job_id:
