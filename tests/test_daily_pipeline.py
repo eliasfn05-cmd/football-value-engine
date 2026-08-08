@@ -54,6 +54,25 @@ class DailyPipelineTests(TestCase):
         settle.assert_not_called()
         learning.assert_not_called()
 
+    def test_refresh_mode_enriches_shortlist_and_rescores_without_full_ingest(self):
+        pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
+        with (
+            patch.object(pipeline, "_ingest") as ingest,
+            patch.object(pipeline, "_enrich", return_value=StageResult(20, "enriched")) as enrich,
+            patch.object(pipeline, "_score", return_value=StageResult(40, "rescored")) as score,
+            patch.object(pipeline, "_settle") as settle,
+            patch.object(pipeline, "_learning") as learning,
+        ):
+            run = pipeline.run(date(2026, 8, 8), mode="refresh")
+
+        self.assertEqual(run.metadata["mode"], "refresh")
+        self.assertEqual(list(run.stages.values_list("name", flat=True)), ["ENRICH_CANDIDATES", "SCORE_V8"])
+        ingest.assert_not_called()
+        enrich.assert_called_once_with(date(2026, 8, 8))
+        score.assert_called_once_with(date(2026, 8, 8))
+        settle.assert_not_called()
+        learning.assert_not_called()
+
     def test_settlement_mode_runs_only_historical_stages(self):
         pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
         with (
