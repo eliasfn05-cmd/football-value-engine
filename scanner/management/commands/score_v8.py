@@ -12,6 +12,9 @@ from engine.models import Fixture, Prediction
 from engine.score_v8 import ScoreEngineV8, V8_MODEL_VERSION
 
 
+PERSIST_BATCH_SIZE = 200
+
+
 class Command(BaseCommand):
     help = "Evaluate and persist V8 BTTS/Over 2.5 predictions from PostgreSQL features."
 
@@ -126,14 +129,32 @@ class Command(BaseCommand):
             "expected_value", "score", "tier", "reasons",
         ]
         self.stdout.write(
-            f"[score_v8] bulk persist create={len(to_create)} update={len(to_update)}...",
+            f"[score_v8] chunked persist create={len(to_create)} update={len(to_update)} "
+            f"batch_size={PERSIST_BATCH_SIZE}",
             ending="\n",
         )
-        with transaction.atomic():
-            if to_create:
-                Prediction.objects.bulk_create(to_create, batch_size=1000)
-            if to_update:
-                Prediction.objects.bulk_update(to_update, update_fields, batch_size=1000)
+
+        created_done = 0
+        for offset in range(0, len(to_create), PERSIST_BATCH_SIZE):
+            batch = to_create[offset: offset + PERSIST_BATCH_SIZE]
+            with transaction.atomic():
+                Prediction.objects.bulk_create(batch, batch_size=PERSIST_BATCH_SIZE)
+            created_done += len(batch)
+            self.stdout.write(
+                f"[score_v8] persisted creates {created_done}/{len(to_create)}",
+                ending="\n",
+            )
+
+        updated_done = 0
+        for offset in range(0, len(to_update), PERSIST_BATCH_SIZE):
+            batch = to_update[offset: offset + PERSIST_BATCH_SIZE]
+            with transaction.atomic():
+                Prediction.objects.bulk_update(batch, update_fields, batch_size=PERSIST_BATCH_SIZE)
+            updated_done += len(batch)
+            self.stdout.write(
+                f"[score_v8] persisted updates {updated_done}/{len(to_update)}",
+                ending="\n",
+            )
 
         premium.sort(key=lambda item: ((item.get("expected_value") or -999), item.get("score") or 0), reverse=True)
         payload = {
