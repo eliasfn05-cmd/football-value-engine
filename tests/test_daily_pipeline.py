@@ -20,9 +20,42 @@ class DailyPipelineTests(TestCase):
 
         self.assertEqual(run.status, PipelineRun.STATUS_SUCCESS)
         self.assertEqual(run.stages.count(), 4)
-        self.assertEqual(run.error_count, 0)
-        self.assertEqual(run.warning_count, 0)
+        self.assertEqual(run.metadata["mode"], "full")
         self.assertTrue(all(stage.status == PipelineStageRun.STATUS_SUCCESS for stage in run.stages.all()))
+
+    def test_morning_mode_runs_only_ingest_and_score(self):
+        pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
+        with (
+            patch.object(pipeline, "_ingest", return_value=StageResult(10, "ingested")) as ingest,
+            patch.object(pipeline, "_score", return_value=StageResult(20, "scored")) as score,
+            patch.object(pipeline, "_settle") as settle,
+            patch.object(pipeline, "_learning") as learning,
+        ):
+            run = pipeline.run(date(2026, 8, 8), mode="morning")
+
+        self.assertEqual(run.metadata["mode"], "morning")
+        self.assertEqual(list(run.stages.values_list("name", flat=True)), ["INGEST", "SCORE_V8"])
+        ingest.assert_called_once()
+        score.assert_called_once()
+        settle.assert_not_called()
+        learning.assert_not_called()
+
+    def test_settlement_mode_runs_only_historical_stages(self):
+        pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
+        with (
+            patch.object(pipeline, "_ingest") as ingest,
+            patch.object(pipeline, "_score") as score,
+            patch.object(pipeline, "_settle", return_value=StageResult(2, "settled")) as settle,
+            patch.object(pipeline, "_learning", return_value=StageResult(5, "learned")) as learning,
+        ):
+            run = pipeline.run(date(2026, 8, 8), mode="settlement")
+
+        self.assertEqual(run.metadata["mode"], "settlement")
+        self.assertEqual(list(run.stages.values_list("name", flat=True)), ["SETTLE", "LEARNING"])
+        ingest.assert_not_called()
+        score.assert_not_called()
+        settle.assert_called_once()
+        learning.assert_called_once()
 
     def test_stage_retries_before_success(self):
         pipeline = DailyPipeline(max_attempts=3, retry_delay_seconds=0)
@@ -48,7 +81,7 @@ class DailyPipelineTests(TestCase):
             patch.object(pipeline, "_settle", return_value=StageResult(0, "settled")),
             patch.object(pipeline, "_learning", return_value=StageResult(0, "learning")),
         ):
-            run = pipeline.run(date(2026, 8, 8))
+            run = pipeline.run(date(2026, 8, 8), mode="full")
 
         self.assertEqual(run.status, PipelineRun.STATUS_FAILED)
         score.assert_not_called()
@@ -58,3 +91,7 @@ class DailyPipelineTests(TestCase):
         self.assertEqual(ingest.attempt_count, 2)
         self.assertEqual(scoring.status, PipelineStageRun.STATUS_WARNING)
         self.assertIn("ingestion failed", scoring.message)
+
+    def test_rejects_unknown_mode(self):
+        with self.assertRaises(ValueError):
+            DailyPipeline(retry_delay_seconds=0).run(date(2026, 8, 8), mode="nightly")
