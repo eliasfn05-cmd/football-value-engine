@@ -33,19 +33,18 @@ class GitHubPipelineTrigger:
     def configured(self) -> bool:
         return bool(self.token)
 
-    def dispatch(self, *, target_date: date, mode: str = "full") -> TriggerResult:
+    def dispatch(self, *, target_date: date, mode: str = "full", generation_job_id: int | None = None) -> TriggerResult:
         if not self.token:
             return TriggerResult(False, "GITHUB_ACTIONS_TOKEN no está configurado en Render.")
 
-        payload = json.dumps(
-            {
-                "ref": "main",
-                "inputs": {
-                    "mode": mode,
-                    "target_date": target_date.isoformat(),
-                },
-            }
-        ).encode("utf-8")
+        inputs = {
+            "mode": mode,
+            "target_date": target_date.isoformat(),
+        }
+        if generation_job_id is not None:
+            inputs["generation_job_id"] = str(int(generation_job_id))
+
+        payload = json.dumps({"ref": "main", "inputs": inputs}).encode("utf-8")
         request = urllib.request.Request(
             self.API_URL,
             data=payload,
