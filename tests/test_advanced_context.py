@@ -48,7 +48,7 @@ class FakeProvider(SportsDataProvider):
                 },
                 {
                     "team": {"id": 2},
-                    "startXI": [{"player": {"id": n + 20, "pos": "F" if n in {9, 10} else "M"}} for n in range(1, 12)],
+                    "startXI": [{"player": {"id": n, "pos": "F" if n in {36, 37} else "M"}} for n in range(28, 39)],
                 },
             ]
         if int(fixture_id) == 80:
@@ -59,7 +59,7 @@ class FakeProvider(SportsDataProvider):
                 },
                 {
                     "team": {"id": 2},
-                    "startXI": [{"player": {"id": n, "pos": "F" if n in {9, 10, 11} else "M"}} for n in range(21, 32)],
+                    "startXI": [{"player": {"id": n, "pos": "F" if n in {29, 30, 31} else "M"}} for n in range(21, 32)],
                 },
             ]
         return []
@@ -125,6 +125,7 @@ class AdvancedContextTests(unittest.TestCase):
             away_history=[{"fixture": {"id": 80}}],
         )
         self.assertLess(enriched.lineup_attack_factor_away, 1.0)
+        self.assertLess(metadata["away_lineup_context"]["starting_xi_continuity"], 0.45)
         self.assertTrue(metadata["away_lineup_context"]["lineup_available"])
 
 
