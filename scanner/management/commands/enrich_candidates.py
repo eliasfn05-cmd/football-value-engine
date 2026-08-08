@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
@@ -73,6 +74,10 @@ class Command(BaseCommand):
         lineups_saved = 0
         standings_saved = 0
         errors = 0
+        preferred_hits = 0
+        fallback_hits = 0
+        no_odds = 0
+        preferred_name = os.getenv("PREFERRED_BOOKMAKER", "Betano").strip().lower()
 
         self.stdout.write(
             f"[enrich] candidates={len(fixtures)} min_score={min_score:.1f} limit={limit}"
@@ -84,7 +89,19 @@ class Command(BaseCommand):
             )
             try:
                 odds_payload = provider.fixture_odds(fixture.external_id)
-                quotes = parse_quotes(odds_payload)
+                quotes = parse_quotes(odds_payload, allow_fallback=True)
+                quote_bookmakers = {
+                    quote.bookmaker.strip().lower()
+                    for quote in quotes.values()
+                    if quote is not None and quote.bookmaker
+                }
+                if not quote_bookmakers:
+                    no_odds += 1
+                elif preferred_name in quote_bookmakers:
+                    preferred_hits += 1
+                else:
+                    fallback_hits += 1
+
                 odds_saved += self._save_quote_if_changed(fixture, "BTTS", "YES", quotes.get("btts"))
                 odds_saved += self._save_quote_if_changed(fixture, "OVER_2_5", "OVER", quotes.get("over25"))
             except Exception as exc:
@@ -101,9 +118,6 @@ class Command(BaseCommand):
             if competition and competition.id not in standings_seen:
                 standings_seen.add(competition.id)
                 try:
-                    # Avoid another provider call when this competition already
-                    # has persisted standings evidence. Standings change far less
-                    # frequently than odds/lineups and are shared by all fixtures.
                     if not StandingSnapshot.objects.filter(competition=competition).exists():
                         standings_saved += ingestion.ingest_standings(competition)
                 except Exception as exc:
@@ -112,6 +126,9 @@ class Command(BaseCommand):
                         f"[enrich] standings error competition={competition.external_id}: {exc}"
                     )
 
+        self.stdout.write(
+            f"[enrich] odds coverage preferred={preferred_hits} fallback={fallback_hits} none={no_odds}"
+        )
         self.stdout.write(
             self.style.SUCCESS(
                 f"[enrich] complete candidates={len(fixtures)} odds={odds_saved} "
