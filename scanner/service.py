@@ -40,25 +40,12 @@ class DailyScanner:
         home_raw = teams.get("home") or {}
         away_raw = teams.get("away") or {}
 
-        home, _ = Team.objects.update_or_create(
-            external_id=str(home_raw.get("id")),
-            defaults={"name": home_raw.get("name", "Unknown"), "country": ""},
-        )
-        away, _ = Team.objects.update_or_create(
-            external_id=str(away_raw.get("id")),
-            defaults={"name": away_raw.get("name", "Unknown"), "country": ""},
-        )
+        home, _ = Team.objects.update_or_create(external_id=str(home_raw.get("id")), defaults={"name": home_raw.get("name", "Unknown"), "country": ""})
+        away, _ = Team.objects.update_or_create(external_id=str(away_raw.get("id")), defaults={"name": away_raw.get("name", "Unknown"), "country": ""})
         venue = (fixture_meta.get("venue") or {}).get("name", "")
         fixture, _ = Fixture.objects.update_or_create(
             external_id=str(fixture_meta.get("id")),
-            defaults={
-                "competition": league.get("name", "Unknown"),
-                "kickoff": self._kickoff(raw),
-                "home_team": home,
-                "away_team": away,
-                "venue": venue or "",
-                "status": self._status(raw),
-            },
+            defaults={"competition": league.get("name", "Unknown"), "kickoff": self._kickoff(raw), "home_team": home, "away_team": away, "venue": venue or "", "status": self._status(raw)},
         )
         return fixture
 
@@ -66,13 +53,7 @@ class DailyScanner:
     def _save_quote(fixture: Fixture, market: str, selection: str, quote) -> None:
         if quote is None:
             return
-        OddsSnapshot.objects.create(
-            fixture=fixture,
-            bookmaker=quote.bookmaker,
-            market=market,
-            selection=selection,
-            decimal_odds=Decimal(str(quote.decimal_odds)),
-        )
+        OddsSnapshot.objects.create(fixture=fixture, bookmaker=quote.bookmaker, market=market, selection=selection, decimal_odds=Decimal(str(quote.decimal_odds)))
 
     @staticmethod
     def _save_prediction(fixture: Fixture, evaluation: MarketEvaluation) -> Prediction:
@@ -103,21 +84,10 @@ class DailyScanner:
         h2h = self.provider.head_to_head(home_id, away_id, last=5)
         odds_payload = self.provider.fixture_odds(external_fixture_id)
         quotes = parse_quotes(odds_payload)
-
         context = build_match_context(raw_fixture, home_history, away_history, h2h)
-        context, advanced_context = enrich_match_context(
-            self.provider,
-            raw_fixture,
-            context,
-            home_history,
-            away_history,
-        )
+        context, advanced_context = enrich_match_context(self.provider, raw_fixture, context, home_history, away_history)
 
-        evaluations = self.engine.evaluate(
-            context,
-            btts_quote=quotes["btts"],
-            over25_quote=quotes["over25"],
-        )
+        evaluations = self.engine.evaluate(context, btts_quote=quotes["btts"], over25_quote=quotes["over25"])
         for evaluation in evaluations.values():
             evaluation.reasons.update(advanced_context)
 
@@ -130,6 +100,8 @@ class DailyScanner:
             "fixture": str(fixture),
             "kickoff": fixture.kickoff.isoformat(),
             "advanced_context": advanced_context,
+            "betano_btts_available": quotes["btts"] is not None,
+            "betano_over25_available": quotes["over25"] is not None,
             "btts": asdict(evaluations["btts"]),
             "over25": asdict(evaluations["over25"]),
             "prediction_ids": {name: prediction.id for name, prediction in saved.items()},
@@ -142,7 +114,7 @@ class DailyScanner:
         for raw in fixtures:
             try:
                 results.append(self.scan_fixture(raw))
-            except Exception as exc:  # One bad fixture must not abort the daily board.
+            except Exception as exc:
                 fixture_id = ((raw.get("fixture") or {}).get("id"))
                 errors.append({"fixture_id": fixture_id, "error": str(exc)})
 
@@ -151,19 +123,21 @@ class DailyScanner:
             for key in ("btts", "over25"):
                 evaluation = result[key]
                 if evaluation.get("tier") == "TIER_A":
-                    tier_a.append({
-                        "fixture_id": result["fixture_id"],
-                        "fixture": result["fixture"],
-                        "kickoff": result["kickoff"],
-                        **evaluation,
-                    })
+                    tier_a.append({"fixture_id": result["fixture_id"], "fixture": result["fixture"], "kickoff": result["kickoff"], **evaluation})
         tier_a.sort(key=lambda row: (row.get("expected_value") or -999, row.get("score") or 0), reverse=True)
         for rank, row in enumerate(tier_a, start=1):
             row["rank"] = rank
 
+        fixtures_with_any_betano = sum(1 for r in results if r["betano_btts_available"] or r["betano_over25_available"])
+        lineup_available = sum(1 for r in results if (r.get("advanced_context") or {}).get("home_lineup_context", {}).get("lineup_available") or (r.get("advanced_context") or {}).get("away_lineup_context", {}).get("lineup_available"))
+
         return {
             "date": target_date.isoformat(),
+            "fixtures_provider_total": len(fixtures),
             "fixtures_scanned": len(results),
+            "fixtures_with_betano_odds": fixtures_with_any_betano,
+            "fixtures_with_lineups": lineup_available,
+            "coverage_betano_pct": round((fixtures_with_any_betano / len(results) * 100), 2) if results else 0.0,
             "errors": errors,
             "tier_a": tier_a,
         }
