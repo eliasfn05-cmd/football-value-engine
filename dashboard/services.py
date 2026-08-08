@@ -63,6 +63,49 @@ class DashboardService:
             .order_by("fixture__kickoff", "-score")[:limit]
         )
 
+    @staticmethod
+    def _rejection_reason(prediction: Prediction) -> str:
+        reasons = prediction.reasons or {}
+        failures = reasons.get("v8_gate_failures") or []
+        if failures:
+            labels = {
+                "insufficient_data_quality": "Calidad de datos insuficiente",
+                "insufficient_home_venue_sample": "Poca muestra local",
+                "insufficient_away_venue_sample": "Poca muestra visitante",
+            }
+            return ", ".join(labels.get(item, item) for item in failures)
+        if prediction.market_odds is None:
+            return "Sin cuota de mercado"
+        if prediction.market == "BTTS" and float(prediction.probability) < 0.63:
+            return "Probabilidad BTTS < 63%"
+        if prediction.market == "OVER_2_5" and float(prediction.probability) < 0.65:
+            return "Probabilidad Over 2.5 < 65%"
+        if prediction.edge is None or float(prediction.edge) < 0.06:
+            return "Edge < 6%"
+        if prediction.expected_value is None or float(prediction.expected_value) < 0.08:
+            return "EV < 8%"
+        if float(prediction.score) < 80.0:
+            return "Score < 80"
+        return "No cumple todos los filtros Premium"
+
+    def near_premium(self, *, limit: int = 8) -> list[dict[str, Any]]:
+        qs = (
+            Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team")
+            .filter(
+                model_version=self.model_version,
+                fixture__kickoff__gte=timezone.now(),
+            )
+            .exclude(tier="TIER_A")
+            .order_by("-score", "-expected_value", "fixture__kickoff")[:limit]
+        )
+        return [
+            {
+                "prediction": pred,
+                "reason": self._rejection_reason(pred),
+            }
+            for pred in qs
+        ]
+
     def recent_results(self, *, limit: int = 12) -> list[PredictionOutcome]:
         return list(
             PredictionOutcome.objects.select_related(
@@ -143,6 +186,7 @@ class DashboardService:
             "model_version": self.model_version,
             "metrics": self.metrics().to_dict(),
             "premium_picks": self.premium_picks(),
+            "near_premium": self.near_premium(),
             "recent_results": self.recent_results(),
             "market_performance": self.market_performance(),
             "rule_performance": self.rule_performance(),
