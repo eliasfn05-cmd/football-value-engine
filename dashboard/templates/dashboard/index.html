@@ -1,0 +1,128 @@
+{% load static %}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Football Value Engine</title>
+  <link rel="stylesheet" href="{% static 'dashboard/dashboard.css' %}">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">FOOTBALL VALUE ENGINE</p>
+        <h1>Dashboard Premium</h1>
+        <p class="subtitle">Modelo {{ model_version }} · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
+      </div>
+      <div class="status-pill"><span></span> Producción</div>
+    </header>
+
+    <section class="metrics-grid">
+      <article class="metric-card">
+        <span>Win Rate</span>
+        <strong>{% if metrics.win_rate_pct != None %}{{ metrics.win_rate_pct }}%{% else %}—{% endif %}</strong>
+        <small>{{ metrics.wins }}W · {{ metrics.losses }}L · n={{ metrics.sample_size }}</small>
+      </article>
+      <article class="metric-card">
+        <span>ROI</span>
+        <strong>{% if metrics.roi_pct != None %}{{ metrics.roi_pct }}%{% else %}—{% endif %}</strong>
+        <small>Sobre stake liquidado</small>
+      </article>
+      <article class="metric-card">
+        <span>Yield</span>
+        <strong>{% if metrics.yield_pct != None %}{{ metrics.yield_pct }}%{% else %}—{% endif %}</strong>
+        <small>Rendimiento por unidad</small>
+      </article>
+      <article class="metric-card">
+        <span>Profit</span>
+        <strong>{{ metrics.profit_units|floatformat:2 }} u</strong>
+        <small>Solo Picks Premium</small>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">SELECCIÓN ACTUAL</p>
+          <h2>Picks Premium</h2>
+        </div>
+        <span class="count-badge">{{ premium_picks|length }}</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>EV</th><th>Score</th><th>Hora</th></tr>
+          </thead>
+          <tbody>
+            {% for pick in premium_picks %}
+            <tr>
+              <td><strong>{{ pick.fixture.home_team.name }}</strong> vs {{ pick.fixture.away_team.name }}</td>
+              <td><span class="market-pill">{{ pick.market }}</span></td>
+              <td>{{ pick.probability|floatformat:3 }}</td>
+              <td>{% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %}</td>
+              <td>{% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td><strong>{{ pick.score|floatformat:1 }}</strong></td>
+              <td>{{ pick.fixture.kickoff|date:"d/m H:i" }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="7" class="empty">No hay Picks Premium futuros almacenados todavía.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="split-grid">
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">BACKTESTING</p><h2>Por mercado</h2></div></div>
+        <div class="mini-list">
+          {% for row in market_performance %}
+          <div class="mini-row">
+            <div><strong>{{ row.market }}</strong><small>n={{ row.sample_size }} · {{ row.profit_units|floatformat:2 }} u</small></div>
+            <div class="right"><strong>{% if row.win_rate_pct != None %}{{ row.win_rate_pct }}%{% else %}—{% endif %}</strong><small>ROI {% if row.roi_pct != None %}{{ row.roi_pct }}%{% else %}—{% endif %}</small></div>
+          </div>
+          {% empty %}<p class="empty">Sin resultados suficientes por mercado.</p>{% endfor %}
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head"><div><p class="eyebrow">APRENDIZAJE</p><h2>Rendimiento por filtro</h2></div></div>
+        <div class="mini-list">
+          {% for row in rule_performance %}
+          <div class="mini-row">
+            <div><strong>{{ row.rule }}</strong><small>n={{ row.sample_size }} · {{ row.profit_units|floatformat:2 }} u</small></div>
+            <div class="right"><strong>{% if row.win_rate_pct != None %}{{ row.win_rate_pct }}%{% else %}—{% endif %}</strong><small>ROI {% if row.roi_pct != None %}{{ row.roi_pct }}%{% else %}—{% endif %}</small></div>
+          </div>
+          {% empty %}<p class="empty">Los filtros aparecerán cuando existan picks liquidados.</p>{% endfor %}
+        </div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">HISTÓRICO</p><h2>Últimos resultados Premium</h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Partido</th><th>Pick</th><th>Marcador</th><th>Cuota</th><th>Resultado</th><th>P/L</th></tr></thead>
+          <tbody>
+          {% for row in recent_results %}
+            <tr>
+              <td>{{ row.prediction.fixture.home_team.name }} vs {{ row.prediction.fixture.away_team.name }}</td>
+              <td>{{ row.prediction.market }} · {{ row.prediction.selection }}</td>
+              <td>{{ row.home_goals }}-{{ row.away_goals }}</td>
+              <td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td>
+              <td><span class="result result-{{ row.result|lower }}">{{ row.result }}</span></td>
+              <td><strong>{{ row.profit_units|floatformat:2 }} u</strong></td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6" class="empty">Aún no hay Picks Premium liquidados.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>Football Value Engine · métricas calculadas sobre predicciones almacenadas, sin reinterpretación posterior al partido.</footer>
+  </main>
+</body>
+</html>
