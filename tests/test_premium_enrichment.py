@@ -85,3 +85,12 @@ class PremiumEnrichmentTests(TestCase):
             self.home.external_id,
             last=20,
         )
+
+    def test_interactive_fast_flag_is_explicit_and_off_by_default(self):
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("PREMIUM_INTERACTIVE_FAST", None)
+            self.assertFalse(Command._interactive_fast_enabled())
+
+        with patch.dict("os.environ", {"PREMIUM_INTERACTIVE_FAST": "1"}):
+            self.assertTrue(Command._interactive_fast_enabled())
