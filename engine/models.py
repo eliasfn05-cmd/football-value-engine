@@ -74,7 +74,7 @@ class StandingSnapshot(models.Model):
     captured_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        indexes = [models.Index(fields=["competition", "captured_at"])]
+        indexes = [models.Index(fields=["competition", "captured_at"], name="stand_comp_cap_idx")]
 
 
 class TeamStatisticsSnapshot(models.Model):
@@ -85,7 +85,7 @@ class TeamStatisticsSnapshot(models.Model):
     captured_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        indexes = [models.Index(fields=["fixture", "team", "captured_at"])]
+        indexes = [models.Index(fields=["fixture", "team", "captured_at"], name="teamstat_fix_team_cap_idx")]
 
 
 class LineupSnapshot(models.Model):
@@ -98,7 +98,7 @@ class LineupSnapshot(models.Model):
     captured_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        indexes = [models.Index(fields=["fixture", "team", "captured_at"])]
+        indexes = [models.Index(fields=["fixture", "team", "captured_at"], name="lineup_fix_team_cap_idx")]
 
 
 class OddsSnapshot(models.Model):
