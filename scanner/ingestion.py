@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 
 from django.db import transaction
 from django.utils import timezone
@@ -19,8 +19,14 @@ from .providers.base import SportsDataProvider
 
 
 class DataIngestionService:
-    def __init__(self, provider: SportsDataProvider):
+    def __init__(self, provider: SportsDataProvider, *, progress: Callable[[str], None] | None = None):
         self.provider = provider
+        self.progress = progress or (lambda _message: None)
+        self._team_cache: dict[str, Team] = {}
+        self._competition_cache: dict[tuple[str, int | None], Competition] = {}
+
+    def _log(self, message: str) -> None:
+        self.progress(message)
 
     @staticmethod
     def _kickoff(raw: dict) -> datetime:
@@ -28,23 +34,33 @@ class DataIngestionService:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return dt if timezone.is_aware(dt) else timezone.make_aware(dt)
 
-    @staticmethod
-    def _upsert_team(raw: dict) -> Team:
-        return Team.objects.update_or_create(
-            external_id=str(raw.get("id")),
+    def _upsert_team(self, raw: dict) -> Team:
+        external_id = str(raw.get("id"))
+        cached = self._team_cache.get(external_id)
+        if cached is not None:
+            return cached
+        team = Team.objects.update_or_create(
+            external_id=external_id,
             defaults={
                 "name": raw.get("name") or "Unknown",
                 "country": raw.get("country") or "",
                 "logo": raw.get("logo") or "",
             },
         )[0]
+        self._team_cache[external_id] = team
+        return team
 
-    @staticmethod
-    def _upsert_competition(raw_fixture: dict) -> Competition:
+    def _upsert_competition(self, raw_fixture: dict) -> Competition:
         league = raw_fixture.get("league") or {}
-        return Competition.objects.update_or_create(
-            external_id=str(league.get("id")),
-            season=league.get("season"),
+        external_id = str(league.get("id"))
+        season = league.get("season")
+        key = (external_id, season)
+        cached = self._competition_cache.get(key)
+        if cached is not None:
+            return cached
+        competition = Competition.objects.update_or_create(
+            external_id=external_id,
+            season=season,
             defaults={
                 "name": league.get("name") or "Unknown",
                 "country": league.get("country") or "",
@@ -52,8 +68,9 @@ class DataIngestionService:
                 "logo": league.get("logo") or "",
             },
         )[0]
+        self._competition_cache[key] = competition
+        return competition
 
-    @transaction.atomic
     def upsert_fixture(self, raw: dict) -> Fixture:
         teams = raw.get("teams") or {}
         fixture_meta = raw.get("fixture") or {}
@@ -164,27 +181,37 @@ class DataIngestionService:
         return count
 
     def ingest_date(self, target_date: date, *, include_details: bool = True) -> dict:
+        self._log(f"[ingest] requesting fixtures for {target_date.isoformat()}")
         raw_fixtures = self.provider.fixtures_by_date(target_date)
+        self._log(f"[ingest] API returned {len(raw_fixtures)} fixtures")
+
         fixtures: list[Fixture] = []
         errors: list[dict] = []
         lineups = 0
         statistics = 0
         standings = 0
+        total = len(raw_fixtures)
 
-        for raw in raw_fixtures:
-            try:
-                fixture = self.upsert_fixture(raw)
-                fixtures.append(fixture)
-                if include_details:
-                    lineups += self.ingest_lineups(fixture)
-                    if fixture.status in {"FT", "AET", "PEN"}:
-                        statistics += self.ingest_statistics(fixture)
-            except Exception as exc:
-                errors.append({"fixture_id": ((raw.get("fixture") or {}).get("id")), "error": str(exc)})
+        # Keep the fixture discovery write phase in one transaction and reuse
+        # cached Team/Competition instances. This matters when GitHub Actions is
+        # talking to Render PostgreSQL over an external connection.
+        with transaction.atomic():
+            for index, raw in enumerate(raw_fixtures, start=1):
+                try:
+                    fixture = self.upsert_fixture(raw)
+                    fixtures.append(fixture)
+                    if include_details:
+                        lineups += self.ingest_lineups(fixture)
+                        if fixture.status in {"FT", "AET", "PEN"}:
+                            statistics += self.ingest_statistics(fixture)
+                except Exception as exc:
+                    errors.append({"fixture_id": ((raw.get("fixture") or {}).get("id")), "error": str(exc)})
 
-        # IMPORTANT: a fixtures-only morning scan must remain cheap and fast.
-        # Standings require one API request per competition, so they belong to
-        # the detailed enrichment path, not to the initial fixture discovery.
+                if index == 1 or index % 100 == 0 or index == total:
+                    self._log(f"[ingest] persisted {index}/{total} fixtures; errors={len(errors)}")
+
+        # A fixtures-only morning scan must remain cheap. Standings require one
+        # API request per competition and belong to the detailed enrichment path.
         if include_details:
             competitions_seen: set[int] = set()
             for fixture in fixtures:
@@ -197,6 +224,10 @@ class DataIngestionService:
                 except Exception as exc:
                     errors.append({"competition_id": competition.external_id, "error": str(exc)})
 
+        self._log(
+            f"[ingest] complete fixtures={len(fixtures)} lineups={lineups} "
+            f"statistics={statistics} standings={standings} errors={len(errors)}"
+        )
         return {
             "date": target_date.isoformat(),
             "fixtures": len(fixtures),
