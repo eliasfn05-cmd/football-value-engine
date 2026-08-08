@@ -3,18 +3,21 @@ from __future__ import annotations
 from collections import defaultdict
 from statistics import mean
 
-from django.db.models import Q
+from django.db.models import F, Q, Window
+from django.db.models.functions import RowNumber
 
 from .features import FeatureEngineeringService, FeatureVector, VenueProfile
 from .models import Fixture, LineupSnapshot, OddsSnapshot, StandingSnapshot
 
 
 class BatchFeatureEngineeringService:
-    """Preload feature evidence for a set of fixtures in a handful of queries.
+    """Bounded SQL preload for scoring a complete date against remote PostgreSQL.
 
-    The original FeatureEngineeringService is intentionally kept for single
-    fixture inspection/backtesting. This class is the production fast path for
-    scoring a complete date against a remote PostgreSQL database.
+    Every evidence query is capped in SQL before rows cross the network:
+    - last N home/away results per team,
+    - latest standing per competition/team,
+    - current lineup plus latest previous lineup,
+    - latest relevant market quote per fixture.
     """
 
     def __init__(self, fixtures: list[Fixture], venue_sample_size: int = 5):
@@ -27,7 +30,7 @@ class BatchFeatureEngineeringService:
         self._history: dict[tuple[int, str], list[Fixture]] = defaultdict(list)
         self._standings: dict[tuple[int, int], StandingSnapshot] = {}
         self._lineups_current: dict[tuple[int, int], LineupSnapshot] = {}
-        self._lineups_previous: dict[tuple[int, int], LineupSnapshot] = {}
+        self._previous_lineup_by_team: dict[int, LineupSnapshot] = {}
         self._odds: dict[tuple[int, str, str], float] = {}
 
     def preload(self) -> None:
@@ -39,19 +42,44 @@ class BatchFeatureEngineeringService:
         self._preload_odds()
 
     def _preload_history(self) -> None:
-        # Use the first kickoff of the scored batch as the historical cutoff.
-        # This guarantees that no fixture in the batch can see a later result.
-        qs = (
-            Fixture.objects.filter(Q(home_team_id__in=self.team_ids) | Q(away_team_id__in=self.team_ids))
-            .filter(kickoff__lt=self.min_kickoff, home_goals__isnull=False, away_goals__isnull=False)
+        # Two bounded window queries avoid sorting/transferring the complete
+        # historical fixture table for thousands of teams.
+        base_filters = {
+            "kickoff__lt": self.min_kickoff,
+            "home_goals__isnull": False,
+            "away_goals__isnull": False,
+        }
+        home_qs = (
+            Fixture.objects.filter(home_team_id__in=self.team_ids, **base_filters)
+            .annotate(
+                rn=Window(
+                    expression=RowNumber(),
+                    partition_by=[F("home_team_id")],
+                    order_by=F("kickoff").desc(),
+                )
+            )
+            .filter(rn__lte=self.venue_sample_size)
             .select_related("home_team", "away_team")
-            .order_by("-kickoff")
+            .order_by("home_team_id", "-kickoff")
         )
-        for item in qs.iterator(chunk_size=2000):
-            if item.home_team_id in self.team_ids and len(self._history[(item.home_team_id, "home")]) < self.venue_sample_size:
-                self._history[(item.home_team_id, "home")].append(item)
-            if item.away_team_id in self.team_ids and len(self._history[(item.away_team_id, "away")]) < self.venue_sample_size:
-                self._history[(item.away_team_id, "away")].append(item)
+        for item in home_qs.iterator(chunk_size=1000):
+            self._history[(item.home_team_id, "home")].append(item)
+
+        away_qs = (
+            Fixture.objects.filter(away_team_id__in=self.team_ids, **base_filters)
+            .annotate(
+                rn=Window(
+                    expression=RowNumber(),
+                    partition_by=[F("away_team_id")],
+                    order_by=F("kickoff").desc(),
+                )
+            )
+            .filter(rn__lte=self.venue_sample_size)
+            .select_related("home_team", "away_team")
+            .order_by("away_team_id", "-kickoff")
+        )
+        for item in away_qs.iterator(chunk_size=1000):
+            self._history[(item.away_team_id, "away")].append(item)
 
     def _preload_standings(self) -> None:
         competition_ids = {f.competition_ref_id for f in self.fixtures if f.competition_ref_id}
@@ -63,43 +91,71 @@ class BatchFeatureEngineeringService:
                 team_id__in=self.team_ids,
                 captured_at__lte=self.min_kickoff,
             )
-            .order_by("competition_id", "team_id", "-captured_at")
+            .annotate(
+                rn=Window(
+                    expression=RowNumber(),
+                    partition_by=[F("competition_id"), F("team_id")],
+                    order_by=F("captured_at").desc(),
+                )
+            )
+            .filter(rn=1)
+            .order_by("competition_id", "team_id")
         )
-        for row in qs.iterator(chunk_size=2000):
-            key = (row.competition_id, row.team_id)
-            if key not in self._standings:
-                self._standings[key] = row
+        for row in qs.iterator(chunk_size=1000):
+            self._standings[(row.competition_id, row.team_id)] = row
 
     def _preload_lineups(self) -> None:
-        qs = (
-            LineupSnapshot.objects.filter(team_id__in=self.team_ids, fixture__kickoff__lte=self.max_kickoff)
-            .select_related("fixture")
-            .order_by("team_id", "-fixture__kickoff", "-captured_at")
+        # Current snapshots are bounded to today's fixtures. Previous lineup is
+        # one row per team before the first kickoff, which is sufficient for a
+        # same-day scoring batch and avoids loading every historical lineup.
+        current_qs = (
+            LineupSnapshot.objects.filter(fixture_id__in=self.fixture_ids, team_id__in=self.team_ids)
+            .annotate(
+                rn=Window(
+                    expression=RowNumber(),
+                    partition_by=[F("fixture_id"), F("team_id")],
+                    order_by=F("captured_at").desc(),
+                )
+            )
+            .filter(rn=1)
         )
-        by_team: dict[int, list[LineupSnapshot]] = defaultdict(list)
-        for row in qs.iterator(chunk_size=2000):
-            by_team[row.team_id].append(row)
+        for row in current_qs.iterator(chunk_size=1000):
+            self._lineups_current[(row.fixture_id, row.team_id)] = row
 
-        for fixture in self.fixtures:
-            for team_id in (fixture.home_team_id, fixture.away_team_id):
-                rows = by_team.get(team_id, [])
-                current = next((r for r in rows if r.fixture_id == fixture.id), None)
-                previous = next((r for r in rows if r.fixture.kickoff < fixture.kickoff), None)
-                if current:
-                    self._lineups_current[(fixture.id, team_id)] = current
-                if previous:
-                    self._lineups_previous[(fixture.id, team_id)] = previous
+        previous_qs = (
+            LineupSnapshot.objects.filter(
+                team_id__in=self.team_ids,
+                fixture__kickoff__lt=self.min_kickoff,
+            )
+            .annotate(
+                rn=Window(
+                    expression=RowNumber(),
+                    partition_by=[F("team_id")],
+                    order_by=[F("fixture__kickoff").desc(), F("captured_at").desc()],
+                )
+            )
+            .filter(rn=1)
+            .order_by("team_id")
+        )
+        for row in previous_qs.iterator(chunk_size=1000):
+            self._previous_lineup_by_team[row.team_id] = row
 
     def _preload_odds(self) -> None:
         qs = (
             OddsSnapshot.objects.filter(fixture_id__in=self.fixture_ids)
             .filter(Q(market="BTTS", selection="YES") | Q(market="OVER_2_5", selection="OVER"))
-            .order_by("fixture_id", "market", "selection", "-captured_at")
+            .annotate(
+                rn=Window(
+                    expression=RowNumber(),
+                    partition_by=[F("fixture_id"), F("market"), F("selection")],
+                    order_by=F("captured_at").desc(),
+                )
+            )
+            .filter(rn=1)
+            .order_by("fixture_id", "market", "selection")
         )
-        for row in qs.iterator(chunk_size=2000):
-            key = (row.fixture_id, row.market, row.selection)
-            if key not in self._odds:
-                self._odds[key] = float(row.decimal_odds)
+        for row in qs.iterator(chunk_size=1000):
+            self._odds[(row.fixture_id, row.market, row.selection)] = float(row.decimal_odds)
 
     @staticmethod
     def _profile(fixtures: list[Fixture], venue: str) -> VenueProfile:
@@ -135,7 +191,7 @@ class BatchFeatureEngineeringService:
 
     def _continuity(self, fixture_id: int, team_id: int) -> float | None:
         current = self._lineups_current.get((fixture_id, team_id))
-        previous = self._lineups_previous.get((fixture_id, team_id))
+        previous = self._previous_lineup_by_team.get(team_id)
         current_ids = self._player_ids(current)
         previous_ids = self._player_ids(previous)
         if not current_ids or not previous_ids:
