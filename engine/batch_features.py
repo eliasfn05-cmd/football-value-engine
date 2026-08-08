@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from statistics import mean
+from typing import Callable
 
 from django.db.models import F, Q, Window
 from django.db.models.functions import RowNumber
@@ -11,18 +13,18 @@ from .models import Fixture, LineupSnapshot, OddsSnapshot, StandingSnapshot
 
 
 class BatchFeatureEngineeringService:
-    """Bounded SQL preload for scoring a complete date against remote PostgreSQL.
+    """Bounded SQL preload for scoring a complete date against remote PostgreSQL."""
 
-    Every evidence query is capped in SQL before rows cross the network:
-    - last N home/away results per team,
-    - latest standing per competition/team,
-    - current lineup plus latest previous lineup,
-    - latest relevant market quote per fixture.
-    """
-
-    def __init__(self, fixtures: list[Fixture], venue_sample_size: int = 5):
+    def __init__(
+        self,
+        fixtures: list[Fixture],
+        venue_sample_size: int = 5,
+        *,
+        progress: Callable[[str], None] | None = None,
+    ):
         self.fixtures = fixtures
         self.venue_sample_size = venue_sample_size
+        self.progress = progress or (lambda _message: None)
         self.team_ids = {f.home_team_id for f in fixtures} | {f.away_team_id for f in fixtures}
         self.fixture_ids = {f.id for f in fixtures}
         self.min_kickoff = min((f.kickoff for f in fixtures), default=None)
@@ -33,17 +35,25 @@ class BatchFeatureEngineeringService:
         self._previous_lineup_by_team: dict[int, LineupSnapshot] = {}
         self._odds: dict[tuple[int, str, str], float] = {}
 
+    def _phase(self, name: str, fn) -> None:
+        started = time.perf_counter()
+        self.progress(f"[features] START {name}")
+        fn()
+        elapsed = time.perf_counter() - started
+        self.progress(f"[features] DONE {name} {elapsed:.2f}s")
+
     def preload(self) -> None:
         if not self.fixtures:
             return
-        self._preload_history()
-        self._preload_standings()
-        self._preload_lineups()
-        self._preload_odds()
+        self.progress(
+            f"[features] preload teams={len(self.team_ids)} fixtures={len(self.fixture_ids)} sample={self.venue_sample_size}"
+        )
+        self._phase("history", self._preload_history)
+        self._phase("standings", self._preload_standings)
+        self._phase("lineups", self._preload_lineups)
+        self._phase("odds", self._preload_odds)
 
     def _preload_history(self) -> None:
-        # Two bounded window queries avoid sorting/transferring the complete
-        # historical fixture table for thousands of teams.
         base_filters = {
             "kickoff__lt": self.min_kickoff,
             "home_goals__isnull": False,
@@ -105,9 +115,6 @@ class BatchFeatureEngineeringService:
             self._standings[(row.competition_id, row.team_id)] = row
 
     def _preload_lineups(self) -> None:
-        # Current snapshots are bounded to today's fixtures. Previous lineup is
-        # one row per team before the first kickoff, which is sufficient for a
-        # same-day scoring batch and avoids loading every historical lineup.
         current_qs = (
             LineupSnapshot.objects.filter(fixture_id__in=self.fixture_ids, team_id__in=self.team_ids)
             .annotate(
