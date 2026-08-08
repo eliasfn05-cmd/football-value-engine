@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -9,11 +10,12 @@ from django.db import transaction
 from django.utils import timezone
 
 from engine.batch_features import BatchFeatureEngineeringService
-from engine.models import Fixture, Prediction
+from engine.models import Fixture, FixtureScoreState, Prediction
 from engine.score_v8 import ScoreEngineV8, V8_MODEL_VERSION
 
 
 PERSIST_BATCH_SIZE = 500
+STATE_BATCH_SIZE = 1000
 
 
 class Command(BaseCommand):
@@ -24,6 +26,11 @@ class Command(BaseCommand):
         parser.add_argument("--date", dest="target_date", help="YYYY-MM-DD")
         parser.add_argument("--premium-only", action="store_true")
         parser.add_argument("--summary-only", action="store_true", help="Emit only summary/premium rows for batch runs.")
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Ignore Sprint 5 feature fingerprints and recalculate the complete date.",
+        )
 
     @staticmethod
     def _decimal(value, places: int):
@@ -49,11 +56,37 @@ class Command(BaseCommand):
     def _prediction_changed(pred: Prediction, defaults: dict) -> bool:
         return any(getattr(pred, field) != value for field, value in defaults.items())
 
+    @staticmethod
+    def _feature_fingerprint(fixture: Fixture, features) -> str:
+        """Hash exactly the inputs consumed by V8 plus scheduling identity.
+
+        FeatureVector already contains the persisted historical/standing/lineup/
+        odds evidence used by the model. Adding kickoff/status prevents a moved
+        or materially changed fixture from being treated as unchanged.
+        """
+        payload = {
+            "model_version": V8_MODEL_VERSION,
+            "fixture": {
+                "external_id": fixture.external_id,
+                "kickoff": fixture.kickoff.isoformat(),
+                "status": fixture.status,
+                "competition_ref_id": fixture.competition_ref_id,
+                "season": fixture.season,
+                "round": fixture.round,
+                "home_team_id": fixture.home_team_id,
+                "away_team_id": fixture.away_team_id,
+            },
+            "features": features.to_dict(),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
     def handle(self, *args, **options):
         fixture_id = options.get("fixture_id")
         raw_date = options.get("target_date")
         premium_only = bool(options.get("premium_only"))
         summary_only = bool(options.get("summary_only"))
+        force = bool(options.get("force"))
         if not fixture_id and not raw_date:
             raise CommandError("Provide --fixture-id or --date")
         if fixture_id and raw_date:
@@ -87,7 +120,14 @@ class Command(BaseCommand):
             .order_by("kickoff")
         )
 
-        self.stdout.write(f"[score_v8] fixtures={len(fixtures)}; preloading batch features...", ending="\n")
+        # Incremental mode is the production fast path. Detailed/manual output
+        # keeps full evaluation semantics unless explicitly requested via the
+        # pipeline's summary-only mode.
+        incremental = summary_only and not force
+        self.stdout.write(
+            f"[score_v8] fixtures={len(fixtures)} incremental={str(incremental).lower()}; preloading batch features...",
+            ending="\n",
+        )
         preloader = BatchFeatureEngineeringService(
             fixtures,
             progress=lambda message: self.stdout.write(message, ending="\n"),
@@ -101,14 +141,37 @@ class Command(BaseCommand):
         for pred in existing_qs.iterator(chunk_size=2000):
             existing.setdefault((pred.fixture_id, pred.market, pred.selection), pred)
 
+        score_states = {
+            state.fixture_id: state
+            for state in FixtureScoreState.objects.filter(
+                model_version=V8_MODEL_VERSION,
+                fixture_id__in=fixture_ids,
+            ).iterator(chunk_size=2000)
+        } if incremental else {}
+
         to_create: list[Prediction] = []
         to_update: list[Prediction] = []
-        unchanged = 0
-        premium: list[dict] = []
+        state_create: list[FixtureScoreState] = []
+        state_update: list[FixtureScoreState] = []
+        unchanged_predictions = 0
+        skipped_fixtures = 0
+        evaluated_fixtures = 0
         rows: list[dict] = []
 
         for idx, fixture in enumerate(fixtures, start=1):
             features = preloader.build(fixture)
+            fingerprint = self._feature_fingerprint(fixture, features)
+            state = score_states.get(fixture.id)
+            if incremental and state is not None and state.feature_fingerprint == fingerprint:
+                skipped_fixtures += 1
+                if idx == 1 or idx % 100 == 0 or idx == len(fixtures):
+                    self.stdout.write(
+                        f"[score_v8] inspected {idx}/{len(fixtures)} evaluated={evaluated_fixtures} skipped={skipped_fixtures}",
+                        ending="\n",
+                    )
+                continue
+
+            evaluated_fixtures += 1
             result = engine.evaluate(fixture, features)
 
             for evaluation in result.values():
@@ -129,14 +192,19 @@ class Command(BaseCommand):
                         setattr(pred, field, value)
                     to_update.append(pred)
                 else:
-                    unchanged += 1
+                    unchanged_predictions += 1
 
-                if evaluation["tier"] == "TIER_A":
-                    premium.append({
-                        "fixture_id": fixture.external_id,
-                        "match": f"{fixture.home_team.name} vs {fixture.away_team.name}",
-                        **self._market_payload(evaluation),
-                    })
+            if state is None:
+                state_create.append(
+                    FixtureScoreState(
+                        fixture=fixture,
+                        model_version=V8_MODEL_VERSION,
+                        feature_fingerprint=fingerprint,
+                    )
+                )
+            else:
+                state.feature_fingerprint = fingerprint
+                state_update.append(state)
 
             if not summary_only:
                 row = self._fixture_payload(fixture, result, premium_only)
@@ -144,7 +212,10 @@ class Command(BaseCommand):
                     rows.append(row)
 
             if idx == 1 or idx % 100 == 0 or idx == len(fixtures):
-                self.stdout.write(f"[score_v8] evaluated {idx}/{len(fixtures)}", ending="\n")
+                self.stdout.write(
+                    f"[score_v8] inspected {idx}/{len(fixtures)} evaluated={evaluated_fixtures} skipped={skipped_fixtures}",
+                    ending="\n",
+                )
 
         update_fields = [
             "probability", "fair_odds", "market_odds", "edge",
@@ -152,7 +223,8 @@ class Command(BaseCommand):
         ]
         self.stdout.write(
             f"[score_v8] persist plan create={len(to_create)} update={len(to_update)} "
-            f"unchanged={unchanged} batch_size={PERSIST_BATCH_SIZE}",
+            f"unchanged_predictions={unchanged_predictions} state_create={len(state_create)} "
+            f"state_update={len(state_update)} batch_size={PERSIST_BATCH_SIZE}",
             ending="\n",
         )
 
@@ -172,11 +244,51 @@ class Command(BaseCommand):
             updated_done += len(batch)
             self.stdout.write(f"[score_v8] persisted updates {updated_done}/{len(to_update)}", ending="\n")
 
-        premium.sort(key=lambda item: ((item.get("expected_value") or -999), item.get("score") or 0), reverse=True)
+        # Score state is written only after prediction persistence. If the job
+        # fails before this point the next run safely recalculates the fixture.
+        if state_create:
+            FixtureScoreState.objects.bulk_create(state_create, batch_size=STATE_BATCH_SIZE, ignore_conflicts=True)
+        if state_update:
+            FixtureScoreState.objects.bulk_update(
+                state_update,
+                ["feature_fingerprint", "scored_at"],
+                batch_size=STATE_BATCH_SIZE,
+            )
+
+        premium_qs = (
+            Prediction.objects.select_related("fixture__home_team", "fixture__away_team")
+            .filter(
+                model_version=V8_MODEL_VERSION,
+                fixture__kickoff__gte=start,
+                fixture__kickoff__lt=end,
+                tier="TIER_A",
+            )
+            .order_by("-expected_value", "-score")
+        )
+        premium = [
+            {
+                "fixture_id": pred.fixture.external_id,
+                "match": f"{pred.fixture.home_team.name} vs {pred.fixture.away_team.name}",
+                "market": pred.market,
+                "selection": pred.selection,
+                "probability": pred.probability,
+                "market_odds": pred.market_odds,
+                "fair_odds": pred.fair_odds,
+                "edge": pred.edge,
+                "expected_value": pred.expected_value,
+                "score": pred.score,
+                "tier": pred.tier,
+                "gate_failures": (pred.reasons or {}).get("v8_gate_failures", []),
+            }
+            for pred in premium_qs
+        ]
+
         payload = {
             "date": raw_date,
             "model_version": V8_MODEL_VERSION,
-            "fixtures_scored": len(fixtures),
+            "fixtures_total": len(fixtures),
+            "fixtures_evaluated": evaluated_fixtures,
+            "fixtures_skipped_incremental": skipped_fixtures,
             "premium_count": len(premium),
             "premium": premium,
             "fixtures": None if (premium_only or summary_only) else rows,
@@ -184,8 +296,9 @@ class Command(BaseCommand):
         self.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
         self.stdout.write(
             self.style.SUCCESS(
-                f"[score_v8] complete fixtures={len(fixtures)} premium={len(premium)} "
-                f"created={len(to_create)} updated={len(to_update)} unchanged={unchanged}"
+                f"[score_v8] complete total={len(fixtures)} evaluated={evaluated_fixtures} "
+                f"skipped={skipped_fixtures} premium={len(premium)} created={len(to_create)} "
+                f"updated={len(to_update)} unchanged_predictions={unchanged_predictions}"
             )
         )
 
