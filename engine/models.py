@@ -110,7 +110,12 @@ class OddsSnapshot(models.Model):
     captured_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        indexes = [models.Index(fields=["fixture", "market", "captured_at"])]
+        indexes = [
+            models.Index(
+                fields=["fixture", "market", "captured_at"],
+                name="engine_odds_fixture_market_idx",
+            )
+        ]
 
 
 class Prediction(models.Model):
@@ -129,4 +134,9 @@ class Prediction(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        indexes = [models.Index(fields=["model_version", "tier", "created_at"])]
+        indexes = [
+            models.Index(
+                fields=["model_version", "tier", "created_at"],
+                name="engine_pred_model_tier_idx",
+            )
+        ]
