@@ -12,9 +12,10 @@ class DailyPipelineTests(TestCase):
         pipeline = DailyPipeline(max_attempts=2, retry_delay_seconds=0)
         with (
             patch.object(pipeline, "_ingest", return_value=StageResult(12, "12 fixtures", {"fixtures": 12})) as ingest,
-            patch.object(pipeline, "_score", return_value=StageResult(24, "24 predictions", {"predictions": 24, "premium": 2})) as score,
+            patch.object(pipeline, "_score", return_value=StageResult(24, "24 predictions", {"predictions": 24})) as score,
             patch.object(pipeline, "_enrich", return_value=StageResult(8, "8 enriched", {"candidates": 8})) as enrich,
-            patch.object(pipeline, "_rescore_enriched", return_value=StageResult(8, "8 rescored", {"future_premium": 2})) as rescore,
+            patch.object(pipeline, "_rescore_enriched", return_value=StageResult(8, "8 rescored", {"raw_tier_a": 2})) as rescore,
+            patch.object(pipeline, "_select_premium", return_value=StageResult(3, "3 selected", {"selected": 3})) as select,
             patch.object(pipeline, "_settle", return_value=StageResult(3, "3 settled", {"new": 3})),
             patch.object(pipeline, "_learning", return_value=StageResult(8, "learning refreshed", {"premium_outcomes": 8})),
         ):
@@ -23,7 +24,7 @@ class DailyPipelineTests(TestCase):
         self.assertEqual(run.status, PipelineRun.STATUS_SUCCESS)
         self.assertEqual(
             list(run.stages.values_list("name", flat=True)),
-            ["INGEST", "SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8", "SETTLE", "LEARNING"],
+            ["INGEST", "SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8", "SELECT_PREMIUM", "SETTLE", "LEARNING"],
         )
         self.assertEqual(run.metadata["mode"], "full")
         self.assertTrue(all(stage.status == PipelineStageRun.STATUS_SUCCESS for stage in run.stages.all()))
@@ -31,12 +32,14 @@ class DailyPipelineTests(TestCase):
         score.assert_called_once_with(date(2026, 8, 8))
         enrich.assert_called_once_with(date(2026, 8, 8))
         rescore.assert_called_once_with(date(2026, 8, 8))
+        select.assert_called_once_with(date(2026, 8, 8))
 
     def test_detailed_mode_is_explicit_and_uses_detailed_ingestion(self):
         pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
         with (
             patch.object(pipeline, "_ingest", return_value=StageResult(10, "detailed")) as ingest,
             patch.object(pipeline, "_score", return_value=StageResult(20, "scored")),
+            patch.object(pipeline, "_select_premium", return_value=StageResult(1, "selected")),
             patch.object(pipeline, "_settle", return_value=StageResult(0, "settled")),
             patch.object(pipeline, "_learning", return_value=StageResult(0, "learned")),
         ):
@@ -50,6 +53,7 @@ class DailyPipelineTests(TestCase):
         with (
             patch.object(pipeline, "_ingest", return_value=StageResult(10, "ingested")) as ingest,
             patch.object(pipeline, "_score", return_value=StageResult(20, "scored")) as score,
+            patch.object(pipeline, "_select_premium") as select,
             patch.object(pipeline, "_settle") as settle,
             patch.object(pipeline, "_learning") as learning,
         ):
@@ -59,15 +63,17 @@ class DailyPipelineTests(TestCase):
         self.assertEqual(list(run.stages.values_list("name", flat=True)), ["INGEST", "SCORE_V8"])
         ingest.assert_called_once_with(date(2026, 8, 8), fixtures_only=True)
         score.assert_called_once()
+        select.assert_not_called()
         settle.assert_not_called()
         learning.assert_not_called()
 
-    def test_refresh_mode_enriches_shortlist_and_targeted_rescores_without_full_ingest(self):
+    def test_refresh_mode_enriches_rescores_and_reselects_without_full_ingest(self):
         pipeline = DailyPipeline(max_attempts=1, retry_delay_seconds=0)
         with (
             patch.object(pipeline, "_ingest") as ingest,
             patch.object(pipeline, "_enrich", return_value=StageResult(20, "enriched")) as enrich,
             patch.object(pipeline, "_rescore_enriched", return_value=StageResult(20, "rescored")) as rescore,
+            patch.object(pipeline, "_select_premium", return_value=StageResult(3, "selected")) as select,
             patch.object(pipeline, "_score") as score,
             patch.object(pipeline, "_settle") as settle,
             patch.object(pipeline, "_learning") as learning,
@@ -75,10 +81,11 @@ class DailyPipelineTests(TestCase):
             run = pipeline.run(date(2026, 8, 8), mode="refresh")
 
         self.assertEqual(run.metadata["mode"], "refresh")
-        self.assertEqual(list(run.stages.values_list("name", flat=True)), ["ENRICH_CANDIDATES", "RESCORE_V8"])
+        self.assertEqual(list(run.stages.values_list("name", flat=True)), ["ENRICH_CANDIDATES", "RESCORE_V8", "SELECT_PREMIUM"])
         ingest.assert_not_called()
         enrich.assert_called_once_with(date(2026, 8, 8))
         rescore.assert_called_once_with(date(2026, 8, 8))
+        select.assert_called_once_with(date(2026, 8, 8))
         score.assert_not_called()
         settle.assert_not_called()
         learning.assert_not_called()
@@ -123,6 +130,7 @@ class DailyPipelineTests(TestCase):
             patch.object(pipeline, "_score") as score,
             patch.object(pipeline, "_enrich") as enrich,
             patch.object(pipeline, "_rescore_enriched") as rescore,
+            patch.object(pipeline, "_select_premium") as select,
             patch.object(pipeline, "_settle", return_value=StageResult(0, "settled")),
             patch.object(pipeline, "_learning", return_value=StageResult(0, "learning")),
         ):
@@ -132,15 +140,18 @@ class DailyPipelineTests(TestCase):
         score.assert_not_called()
         enrich.assert_not_called()
         rescore.assert_not_called()
+        select.assert_not_called()
         ingest = run.stages.get(name="INGEST")
         scoring = run.stages.get(name="SCORE_V8")
         enrichment = run.stages.get(name="ENRICH_CANDIDATES")
         rescore_stage = run.stages.get(name="RESCORE_V8")
+        selection = run.stages.get(name="SELECT_PREMIUM")
         self.assertEqual(ingest.status, PipelineStageRun.STATUS_FAILED)
         self.assertEqual(ingest.attempt_count, 2)
         self.assertEqual(scoring.status, PipelineStageRun.STATUS_WARNING)
         self.assertEqual(enrichment.status, PipelineStageRun.STATUS_WARNING)
         self.assertEqual(rescore_stage.status, PipelineStageRun.STATUS_WARNING)
+        self.assertEqual(selection.status, PipelineStageRun.STATUS_WARNING)
         self.assertIn("ingestion failed", scoring.message)
 
     def test_rejects_unknown_mode(self):
