@@ -24,11 +24,18 @@ class StageResult:
 
 
 class DailyPipeline:
-    """Production orchestrator for the daily football-value workflow.
+    """Production orchestrator for the football-value workflow.
 
-    Stages intentionally reuse existing management commands to keep one source
-    of business logic. Each stage is independently observable and retryable.
+    Modes:
+    - full: INGEST -> SCORE_V8 -> SETTLE -> LEARNING
+    - morning: INGEST -> SCORE_V8
+    - settlement: SETTLE -> LEARNING
+
+    Stages intentionally reuse existing management commands so business logic
+    remains centralized, while every execution is observable and retryable.
     """
+
+    MODES = {"full", "morning", "settlement"}
 
     def __init__(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0):
         self.max_attempts = max(1, int(max_attempts))
@@ -115,19 +122,38 @@ class DailyPipeline:
         return stage
 
     @transaction.atomic
-    def _create_run(self, target_date: date) -> PipelineRun:
-        return PipelineRun.objects.create(target_date=target_date, metadata={"model_version": V8_MODEL_VERSION})
+    def _create_run(self, target_date: date, mode: str) -> PipelineRun:
+        return PipelineRun.objects.create(
+            target_date=target_date,
+            metadata={"model_version": V8_MODEL_VERSION, "mode": mode},
+        )
 
-    def run(self, target_date: date) -> PipelineRun:
-        pipeline = self._create_run(target_date)
-        started = timezone.now()
-
-        stages = [
+    def _stages_for(self, target_date: date, mode: str):
+        if mode == "morning":
+            return [
+                ("INGEST", lambda: self._ingest(target_date), True),
+                ("SCORE_V8", lambda: self._score(target_date), True),
+            ]
+        if mode == "settlement":
+            return [
+                ("SETTLE", lambda: self._settle(target_date), False),
+                ("LEARNING", lambda: self._learning(target_date), False),
+            ]
+        return [
             ("INGEST", lambda: self._ingest(target_date), True),
             ("SCORE_V8", lambda: self._score(target_date), True),
             ("SETTLE", lambda: self._settle(target_date), False),
             ("LEARNING", lambda: self._learning(target_date), False),
         ]
+
+    def run(self, target_date: date, *, mode: str = "full") -> PipelineRun:
+        mode = str(mode).lower().strip()
+        if mode not in self.MODES:
+            raise ValueError(f"Unsupported pipeline mode: {mode}")
+
+        pipeline = self._create_run(target_date, mode)
+        started = timezone.now()
+        stages = self._stages_for(target_date, mode)
 
         required_failed = False
         ingest_failed = False
