@@ -58,12 +58,6 @@ class Command(BaseCommand):
 
     @staticmethod
     def _feature_fingerprint(fixture: Fixture, features) -> str:
-        """Hash exactly the inputs consumed by V8 plus scheduling identity.
-
-        FeatureVector already contains the persisted historical/standing/lineup/
-        odds evidence used by the model. Adding kickoff/status prevents a moved
-        or materially changed fixture from being treated as unchanged.
-        """
         payload = {
             "model_version": V8_MODEL_VERSION,
             "fixture": {
@@ -80,6 +74,64 @@ class Command(BaseCommand):
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _premium_diagnostics(predictions, engine: ScoreEngineV8) -> dict:
+        counts = {
+            "total": 0,
+            "missing_odds": 0,
+            "below_probability": 0,
+            "below_edge": 0,
+            "below_ev": 0,
+            "below_score": 0,
+            "gate_failures": 0,
+        }
+        near: list[dict] = []
+        for pred in predictions:
+            counts["total"] += 1
+            reasons = pred.reasons or {}
+            gates_passed = bool(reasons.get("v8_gates_passed"))
+            if not gates_passed:
+                counts["gate_failures"] += 1
+
+            probability_floor = (
+                engine.core.min_btts_probability
+                if pred.market == "BTTS"
+                else engine.core.min_over25_probability
+            )
+            if float(pred.probability) < probability_floor:
+                counts["below_probability"] += 1
+            if pred.market_odds is None:
+                counts["missing_odds"] += 1
+            if pred.edge is None or float(pred.edge) < engine.core.min_edge:
+                counts["below_edge"] += 1
+            if pred.expected_value is None or float(pred.expected_value) < engine.core.min_ev:
+                counts["below_ev"] += 1
+            if float(pred.score) < engine.core.min_score:
+                counts["below_score"] += 1
+
+            if pred.tier != "TIER_A":
+                near.append({
+                    "fixture_id": pred.fixture.external_id,
+                    "match": f"{pred.fixture.home_team.name} vs {pred.fixture.away_team.name}",
+                    "market": pred.market,
+                    "probability": float(pred.probability),
+                    "market_odds": float(pred.market_odds) if pred.market_odds is not None else None,
+                    "edge": float(pred.edge) if pred.edge is not None else None,
+                    "ev": float(pred.expected_value) if pred.expected_value is not None else None,
+                    "score": float(pred.score),
+                    "gate_failures": reasons.get("v8_gate_failures", []),
+                })
+
+        near.sort(
+            key=lambda row: (
+                row["score"],
+                row["ev"] if row["ev"] is not None else -999,
+                row["probability"],
+            ),
+            reverse=True,
+        )
+        return {"rejections": counts, "nearest": near[:5]}
 
     def handle(self, *args, **options):
         fixture_id = options.get("fixture_id")
@@ -120,9 +172,6 @@ class Command(BaseCommand):
             .order_by("kickoff")
         )
 
-        # Incremental mode is the production fast path. Detailed/manual output
-        # keeps full evaluation semantics unless explicitly requested via the
-        # pipeline's summary-only mode.
         incremental = summary_only and not force
         self.stdout.write(
             f"[score_v8] fixtures={len(fixtures)} incremental={str(incremental).lower()}; preloading batch features...",
@@ -244,8 +293,6 @@ class Command(BaseCommand):
             updated_done += len(batch)
             self.stdout.write(f"[score_v8] persisted updates {updated_done}/{len(to_update)}", ending="\n")
 
-        # Score state is written only after prediction persistence. If the job
-        # fails before this point the next run safely recalculates the fixture.
         if state_create:
             FixtureScoreState.objects.bulk_create(state_create, batch_size=STATE_BATCH_SIZE, ignore_conflicts=True)
         if state_update:
@@ -255,16 +302,16 @@ class Command(BaseCommand):
                 batch_size=STATE_BATCH_SIZE,
             )
 
-        premium_qs = (
+        day_predictions = list(
             Prediction.objects.select_related("fixture__home_team", "fixture__away_team")
             .filter(
                 model_version=V8_MODEL_VERSION,
                 fixture__kickoff__gte=start,
                 fixture__kickoff__lt=end,
-                tier="TIER_A",
             )
-            .order_by("-expected_value", "-score")
+            .order_by("-score")
         )
+        premium_predictions = [pred for pred in day_predictions if pred.tier == "TIER_A"]
         premium = [
             {
                 "fixture_id": pred.fixture.external_id,
@@ -280,8 +327,25 @@ class Command(BaseCommand):
                 "tier": pred.tier,
                 "gate_failures": (pred.reasons or {}).get("v8_gate_failures", []),
             }
-            for pred in premium_qs
+            for pred in sorted(
+                premium_predictions,
+                key=lambda pred: (
+                    float(pred.expected_value) if pred.expected_value is not None else -999,
+                    float(pred.score),
+                ),
+                reverse=True,
+            )
         ]
+        diagnostics = self._premium_diagnostics(day_predictions, engine)
+        self.stdout.write(
+            f"[score_v8] premium diagnostics {json.dumps(diagnostics['rejections'], sort_keys=True)}",
+            ending="\n",
+        )
+        if not premium:
+            self.stdout.write(
+                f"[score_v8] nearest premium {json.dumps(diagnostics['nearest'], ensure_ascii=False, default=str)}",
+                ending="\n",
+            )
 
         payload = {
             "date": raw_date,
@@ -291,6 +355,7 @@ class Command(BaseCommand):
             "fixtures_skipped_incremental": skipped_fixtures,
             "premium_count": len(premium),
             "premium": premium,
+            "premium_diagnostics": diagnostics,
             "fixtures": None if (premium_only or summary_only) else rows,
         }
         self.stdout.write(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
