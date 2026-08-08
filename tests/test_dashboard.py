@@ -11,7 +11,7 @@ from backtesting.models import PredictionOutcome
 from dashboard.pipeline_trigger import TriggerResult
 from engine.models import DailyPremiumSelection, Fixture, Prediction, Team
 from engine.score_v8 import V8_MODEL_VERSION
-from scanner.models import PipelineRun
+from scanner.models import PipelineRun, PipelineStageRun, PremiumGenerationJob
 
 
 class DashboardTests(TestCase):
@@ -81,12 +81,7 @@ class DashboardTests(TestCase):
         self.assertNotContains(response, "NO BET")
 
     def test_near_premium_is_hidden_operationally_and_visible_in_developer(self):
-        prediction = self._prediction(
-            kickoff=timezone.now() + timedelta(hours=3),
-            tier="",
-            market="BTTS",
-            odds="1.70",
-        )
+        prediction = self._prediction(kickoff=timezone.now() + timedelta(hours=3), tier="", market="BTTS", odds="1.70")
         prediction.edge = Decimal("0.03000")
         prediction.expected_value = Decimal("0.05000")
         prediction.save(update_fields=["edge", "expected_value"])
@@ -133,8 +128,9 @@ class DashboardTests(TestCase):
             )
         self.assertEqual(response.status_code, 403)
         self.assertFalse(response.json()["ok"])
+        self.assertEqual(PremiumGenerationJob.objects.count(), 0)
 
-    def test_generate_premium_dispatches_full_workflow_with_correct_pin(self):
+    def test_generate_premium_creates_job_and_dispatches_it(self):
         with (
             patch.dict(os.environ, {"PIPELINE_TRIGGER_PIN": "2468", "GITHUB_ACTIONS_TOKEN": "token"}, clear=False),
             patch("dashboard.views.GitHubPipelineTrigger.dispatch", return_value=TriggerResult(True, "enviado")) as dispatch,
@@ -146,11 +142,55 @@ class DashboardTests(TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
-        dispatch.assert_called_once_with(target_date=timezone.localdate(), mode="full")
+        job = PremiumGenerationJob.objects.get(pk=response.json()["job_id"])
+        self.assertEqual(job.status, PremiumGenerationJob.STATUS_DISPATCHED)
+        dispatch.assert_called_once_with(
+            target_date=timezone.localdate(),
+            mode="full",
+            generation_job_id=job.id,
+        )
 
-    def test_generation_status_reports_latest_pipeline(self):
-        run = PipelineRun.objects.create(target_date=timezone.localdate(), metadata={"model_version": V8_MODEL_VERSION})
-        response = self.client.get("/dashboard/generation-status/")
+    def test_generate_premium_reuses_active_job(self):
+        job = PremiumGenerationJob.objects.create(
+            target_date=timezone.localdate(),
+            status=PremiumGenerationJob.STATUS_RUNNING,
+            current_stage="SCORE_V8",
+            progress_pct=35,
+        )
+        with patch.dict(os.environ, {"PIPELINE_TRIGGER_PIN": "2468", "GITHUB_ACTIONS_TOKEN": "token"}, clear=False):
+            response = self.client.post(
+                "/dashboard/generate-premium/",
+                data=json.dumps({"pin": "2468"}),
+                content_type="application/json",
+            )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["run"]["id"], run.id)
-        self.assertEqual(response.json()["run"]["status"], PipelineRun.STATUS_RUNNING)
+        self.assertTrue(response.json()["already_running"])
+        self.assertEqual(response.json()["job_id"], job.id)
+
+    def test_generation_status_reports_specific_job_and_stages(self):
+        run = PipelineRun.objects.create(target_date=timezone.localdate(), metadata={"model_version": V8_MODEL_VERSION})
+        job = PremiumGenerationJob.objects.create(
+            target_date=timezone.localdate(),
+            status=PremiumGenerationJob.STATUS_RUNNING,
+            pipeline=run,
+            current_stage="SCORE_V8",
+            progress_pct=34,
+            message="Ejecutando SCORE_V8…",
+        )
+        PipelineStageRun.objects.create(
+            pipeline=run,
+            name="INGEST",
+            status=PipelineStageRun.STATUS_SUCCESS,
+            finished_at=timezone.now(),
+            duration_seconds=4,
+            records_processed=1200,
+            message="ok",
+        )
+        response = self.client.get(f"/dashboard/generation-status/?job_id={job.id}")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["job"]["id"], job.id)
+        self.assertEqual(payload["job"]["current_stage"], "SCORE_V8")
+        self.assertEqual(payload["job"]["progress_pct"], 34)
+        self.assertEqual(payload["stages"][0]["name"], "INGEST")
+        self.assertEqual(payload["stages"][0]["status"], PipelineStageRun.STATUS_SUCCESS)
