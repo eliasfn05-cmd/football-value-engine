@@ -38,6 +38,12 @@ class APIFootballProvider(SportsDataProvider):
     def team_recent_fixtures(self, team_id: int | str, *, last: int = 10) -> list[dict]:
         return self._get("fixtures", {"team": team_id, "last": last, "status": "FT"})
 
+    def team_fixtures_between(self, team_id: int | str, start: date, end: date) -> list[dict]:
+        return self._get(
+            "fixtures",
+            {"team": team_id, "from": start.isoformat(), "to": end.isoformat()},
+        )
+
     def head_to_head(self, home_team_id: int | str, away_team_id: int | str, *, last: int = 5) -> list[dict]:
         return self._get("fixtures/headtohead", {"h2h": f"{home_team_id}-{away_team_id}", "last": last})
 
