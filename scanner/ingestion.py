@@ -18,6 +18,13 @@ from engine.models import (
 from .providers.base import SportsDataProvider
 
 
+FIXTURE_UPDATE_FIELDS = [
+    "competition", "competition_ref", "season", "round", "kickoff",
+    "home_team", "away_team", "venue", "venue_city", "referee",
+    "status", "home_goals", "away_goals",
+]
+
+
 class DataIngestionService:
     def __init__(self, provider: SportsDataProvider, *, progress: Callable[[str], None] | None = None):
         self.provider = provider
@@ -102,10 +109,28 @@ class DataIngestionService:
             },
         )[0]
 
-    def _bulk_ingest_fixtures(self, raw_fixtures: list[dict]) -> list[Fixture]:
-        """Fast path for morning discovery: persist the complete card in bulk."""
+    @staticmethod
+    def _fixture_signature(fixture: Fixture) -> tuple:
+        return (
+            fixture.competition,
+            fixture.competition_ref_id,
+            fixture.season,
+            fixture.round,
+            fixture.kickoff,
+            fixture.home_team_id,
+            fixture.away_team_id,
+            fixture.venue,
+            fixture.venue_city,
+            fixture.referee,
+            fixture.status,
+            fixture.home_goals,
+            fixture.away_goals,
+        )
+
+    def _bulk_ingest_fixtures(self, raw_fixtures: list[dict]) -> tuple[list[Fixture], dict[str, int]]:
+        """Fast path: create new fixtures and update only rows whose payload changed."""
         if not raw_fixtures:
-            return []
+            return [], {"created": 0, "changed": 0, "unchanged": 0}
 
         team_raw_by_id: dict[str, dict] = {}
         comp_raw_by_key: dict[tuple[str, int | None], dict] = {}
@@ -179,7 +204,14 @@ class DataIngestionService:
             }
             self._competition_cache.update(competition_map)
 
-            fixture_objects: list[Fixture] = []
+            existing_fixtures = {
+                fixture.external_id: fixture
+                for fixture in Fixture.objects.filter(external_id__in=fixture_external_ids).iterator(chunk_size=2000)
+            }
+            to_create: list[Fixture] = []
+            to_update: list[Fixture] = []
+            unchanged = 0
+
             for raw in raw_fixtures:
                 teams = raw.get("teams") or {}
                 fixture_meta = raw.get("fixture") or {}
@@ -187,6 +219,7 @@ class DataIngestionService:
                 goals = raw.get("goals") or {}
                 status = fixture_meta.get("status") or {}
                 venue = fixture_meta.get("venue") or {}
+                external_id = str(fixture_meta.get("id"))
                 home_raw = teams.get("home") or {}
                 away_raw = teams.get("away") or {}
                 home = team_map.get(str(home_raw.get("id")))
@@ -194,43 +227,56 @@ class DataIngestionService:
                 competition = competition_map.get((str(league.get("id")), league.get("season")))
                 if not home or not away:
                     continue
-                fixture_objects.append(
-                    Fixture(
-                        external_id=str(fixture_meta.get("id")),
-                        competition=league.get("name") or "Unknown",
-                        competition_ref=competition,
-                        season=league.get("season"),
-                        round=league.get("round") or "",
-                        kickoff=self._kickoff(raw),
-                        home_team=home,
-                        away_team=away,
-                        venue=venue.get("name") or "",
-                        venue_city=venue.get("city") or "",
-                        referee=fixture_meta.get("referee") or "",
-                        status=status.get("short") or "scheduled",
-                        home_goals=goals.get("home"),
-                        away_goals=goals.get("away"),
-                    )
-                )
 
-            Fixture.objects.bulk_create(
-                fixture_objects,
-                batch_size=1000,
-                update_conflicts=True,
-                unique_fields=["external_id"],
-                update_fields=[
-                    "competition", "competition_ref", "season", "round", "kickoff",
-                    "home_team", "away_team", "venue", "venue_city", "referee",
-                    "status", "home_goals", "away_goals",
-                ],
-            )
+                desired = Fixture(
+                    external_id=external_id,
+                    competition=league.get("name") or "Unknown",
+                    competition_ref=competition,
+                    season=league.get("season"),
+                    round=league.get("round") or "",
+                    kickoff=self._kickoff(raw),
+                    home_team=home,
+                    away_team=away,
+                    venue=venue.get("name") or "",
+                    venue_city=venue.get("city") or "",
+                    referee=fixture_meta.get("referee") or "",
+                    status=status.get("short") or "scheduled",
+                    home_goals=goals.get("home"),
+                    away_goals=goals.get("away"),
+                )
+                current = existing_fixtures.get(external_id)
+                if current is None:
+                    to_create.append(desired)
+                    continue
+
+                desired.id = current.id
+                if self._fixture_signature(current) == self._fixture_signature(desired):
+                    unchanged += 1
+                    continue
+
+                for field in FIXTURE_UPDATE_FIELDS:
+                    if field.endswith("_ref"):
+                        setattr(current, field, getattr(desired, field))
+                    else:
+                        setattr(current, field, getattr(desired, field))
+                to_update.append(current)
+
+            if to_create:
+                Fixture.objects.bulk_create(to_create, batch_size=1000, ignore_conflicts=True)
+            if to_update:
+                Fixture.objects.bulk_update(to_update, FIXTURE_UPDATE_FIELDS, batch_size=1000)
 
         fixtures = list(
             Fixture.objects.filter(external_id__in=fixture_external_ids)
             .select_related("home_team", "away_team", "competition_ref")
         )
+        stats = {"created": len(to_create), "changed": len(to_update), "unchanged": unchanged}
+        self._log(
+            f"[ingest] delta created={stats['created']} changed={stats['changed']} "
+            f"unchanged={stats['unchanged']}"
+        )
         self._log(f"[ingest] bulk persisted {len(fixtures)}/{len(raw_fixtures)} fixtures")
-        return fixtures
+        return fixtures, stats
 
     def ingest_lineups(self, fixture: Fixture) -> int:
         payload = self.provider.fixture_lineups(fixture.external_id)
@@ -319,9 +365,10 @@ class DataIngestionService:
         lineups = 0
         statistics = 0
         standings = 0
+        fixture_delta = {"created": 0, "changed": 0, "unchanged": 0}
 
         if not include_details:
-            fixtures = self._bulk_ingest_fixtures(raw_fixtures)
+            fixtures, fixture_delta = self._bulk_ingest_fixtures(raw_fixtures)
         else:
             fixtures: list[Fixture] = []
             total = len(raw_fixtures)
@@ -355,6 +402,9 @@ class DataIngestionService:
         return {
             "date": target_date.isoformat(),
             "fixtures": len(fixtures),
+            "fixtures_created": fixture_delta["created"],
+            "fixtures_changed": fixture_delta["changed"],
+            "fixtures_unchanged": fixture_delta["unchanged"],
             "lineups_created": lineups,
             "statistics_created": statistics,
             "standings_created": standings,
