@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -29,6 +30,17 @@ class DashboardMetrics:
 
 class DashboardService:
     """Prepare read-only, presentation-friendly data for the web dashboard."""
+
+    REJECTION_LABELS = {
+        "insufficient_data_quality": "Calidad insuficiente",
+        "insufficient_home_venue_sample": "Poca muestra local",
+        "insufficient_away_venue_sample": "Poca muestra visitante",
+        "missing_odds": "Sin cuota",
+        "probability": "Probabilidad baja",
+        "edge": "Edge < 6%",
+        "ev": "EV < 8%",
+        "score": "Score < 80",
+    }
 
     def __init__(self, model_version: str = V8_MODEL_VERSION):
         self.model_version = model_version
@@ -63,41 +75,52 @@ class DashboardService:
             .order_by("fixture__kickoff", "-score")[:limit]
         )
 
-    @staticmethod
-    def _rejection_reason(prediction: Prediction) -> str:
+    @classmethod
+    def _rejection_codes(cls, prediction: Prediction) -> list[str]:
+        codes: list[str] = []
         reasons = prediction.reasons or {}
-        failures = reasons.get("v8_gate_failures") or []
-        if failures:
-            labels = {
-                "insufficient_data_quality": "Calidad de datos insuficiente",
-                "insufficient_home_venue_sample": "Poca muestra local",
-                "insufficient_away_venue_sample": "Poca muestra visitante",
-            }
-            return ", ".join(labels.get(item, item) for item in failures)
+        for failure in reasons.get("v8_gate_failures") or []:
+            if failure not in codes:
+                codes.append(failure)
         if prediction.market_odds is None:
-            return "Sin cuota de mercado"
-        if prediction.market == "BTTS" and float(prediction.probability) < 0.63:
-            return "Probabilidad BTTS < 63%"
-        if prediction.market == "OVER_2_5" and float(prediction.probability) < 0.65:
-            return "Probabilidad Over 2.5 < 65%"
+            codes.append("missing_odds")
+        probability = float(prediction.probability)
+        probability_floor = 0.63 if prediction.market == "BTTS" else 0.65
+        if probability < probability_floor:
+            codes.append("probability")
         if prediction.edge is None or float(prediction.edge) < 0.06:
-            return "Edge < 6%"
+            codes.append("edge")
         if prediction.expected_value is None or float(prediction.expected_value) < 0.08:
-            return "EV < 8%"
+            codes.append("ev")
         if float(prediction.score) < 80.0:
-            return "Score < 80"
-        return "No cumple todos los filtros Premium"
+            codes.append("score")
+        return codes
 
-    def near_premium(self, *, limit: int = 8) -> list[dict[str, Any]]:
-        qs = (
+    @classmethod
+    def _rejection_reason(cls, prediction: Prediction) -> str:
+        labels = {
+            **cls.REJECTION_LABELS,
+            "insufficient_data_quality": "Calidad de datos insuficiente",
+            "insufficient_home_venue_sample": "Poca muestra local",
+            "insufficient_away_venue_sample": "Poca muestra visitante",
+            "missing_odds": "Sin cuota de mercado",
+            "probability": "Probabilidad BTTS < 63%" if prediction.market == "BTTS" else "Probabilidad Over 2.5 < 65%",
+        }
+        codes = cls._rejection_codes(prediction)
+        return ", ".join(labels.get(code, code) for code in codes) if codes else "No cumple todos los filtros Premium"
+
+    def _future_non_premium_qs(self):
+        return (
             Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team")
             .filter(
                 model_version=self.model_version,
                 fixture__kickoff__gte=timezone.now(),
             )
             .exclude(tier="TIER_A")
-            .order_by("-score", "-expected_value", "fixture__kickoff")[:limit]
         )
+
+    def near_premium(self, *, limit: int = 8) -> list[dict[str, Any]]:
+        qs = self._future_non_premium_qs().order_by("-score", "-expected_value", "fixture__kickoff")[:limit]
         return [
             {
                 "prediction": pred,
@@ -105,6 +128,21 @@ class DashboardService:
             }
             for pred in qs
         ]
+
+    def rejection_summary(self) -> list[dict[str, Any]]:
+        counts: Counter[str] = Counter()
+        total = 0
+        for prediction in self._future_non_premium_qs().iterator(chunk_size=1000):
+            total += 1
+            counts.update(set(self._rejection_codes(prediction)))
+        rows = [
+            {"code": code, "label": self.REJECTION_LABELS.get(code, code), "count": count}
+            for code, count in counts.most_common()
+        ]
+        if total:
+            for row in rows:
+                row["pct"] = round(row["count"] / total * 100, 1)
+        return rows
 
     def recent_results(self, *, limit: int = 12) -> list[PredictionOutcome]:
         return list(
@@ -187,6 +225,7 @@ class DashboardService:
             "metrics": self.metrics().to_dict(),
             "premium_picks": self.premium_picks(),
             "near_premium": self.near_premium(),
+            "rejection_summary": self.rejection_summary(),
             "recent_results": self.recent_results(),
             "market_performance": self.market_performance(),
             "rule_performance": self.rule_performance(),
