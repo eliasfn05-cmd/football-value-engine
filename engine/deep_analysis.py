@@ -12,7 +12,7 @@ from .models import Fixture, Prediction, Team
 from .score_v8 import V8_MODEL_VERSION
 
 
-DEEP_ANALYSIS_VERSION = "sprint7.1"
+DEEP_ANALYSIS_VERSION = "sprint7.2"
 
 
 @dataclass(frozen=True)
@@ -27,10 +27,14 @@ class DeepVenueProfile:
     failed_to_score_rate: float
     btts_over25_escalation_rate: float
     low_score_rate: float
+    recent_sample_size: int
+    recent_over25_rate: float
+    recent_btts_rate: float
+    recent_failed_to_score_rate: float
 
 
 class DeepMatchAnalysisService:
-    """Second-pass market validation using up to 10 official venue matches."""
+    """Second-pass market validation using venue history plus recent-form stability."""
 
     def __init__(self, sample_size: int = 10):
         self.sample_size = max(5, min(int(sample_size), 10))
@@ -70,12 +74,15 @@ class DeepMatchAnalysisService:
     def venue_profile(self, team: Team, venue: str, before_fixture: Fixture) -> DeepVenueProfile:
         fixtures = self._venue_fixtures(team, venue, before_fixture)
         if not fixtures:
-            return DeepVenueProfile(0, 0.5, 0.5, 1.2, 1.2, 2.4, 0.2, 0.2, 0.5, 0.5)
+            return DeepVenueProfile(0, 0.5, 0.5, 1.2, 1.2, 2.4, 0.2, 0.2, 0.5, 0.5, 0, 0.5, 0.5, 0.2)
 
         gf_values: list[int] = []
         ga_values: list[int] = []
         overs = btts = clean = fts = btts_over = low_score = 0
-        for item in fixtures:
+        recent_overs = recent_btts = recent_fts = 0
+        recent_n = min(5, len(fixtures))
+
+        for index, item in enumerate(fixtures):
             hg = int(item.home_goals or 0)
             ag = int(item.away_goals or 0)
             gf, ga = (hg, ag) if venue == "home" else (ag, hg)
@@ -89,6 +96,10 @@ class DeepMatchAnalysisService:
             fts += int(gf == 0)
             btts_over += int(both and total >= 3)
             low_score += int(total <= 2)
+            if index < recent_n:
+                recent_overs += int(total >= 3)
+                recent_btts += int(both)
+                recent_fts += int(gf == 0)
 
         n = len(fixtures)
         return DeepVenueProfile(
@@ -102,6 +113,10 @@ class DeepMatchAnalysisService:
             failed_to_score_rate=round(fts / n, 3),
             btts_over25_escalation_rate=round((btts_over / btts) if btts else 0.5, 3),
             low_score_rate=round(low_score / n, 3),
+            recent_sample_size=recent_n,
+            recent_over25_rate=round(recent_overs / recent_n, 3) if recent_n else 0.5,
+            recent_btts_rate=round(recent_btts / recent_n, 3) if recent_n else 0.5,
+            recent_failed_to_score_rate=round(recent_fts / recent_n, 3) if recent_n else 0.2,
         )
 
     @staticmethod
@@ -112,7 +127,6 @@ class DeepMatchAnalysisService:
 
     @staticmethod
     def _shortfall_penalty(rate: float, target: float, weight: float) -> float:
-        """Continuous penalty: small shortfalls cost little; structural gaps cost more."""
         return max(0.0, (target - rate) * weight)
 
     def _evaluate_market(self, prediction: Prediction, home: DeepVenueProfile, away: DeepVenueProfile) -> dict[str, Any]:
@@ -124,19 +138,25 @@ class DeepMatchAnalysisService:
         market_support_penalty = 0.0
         side_consistency_penalty = 0.0
         coherence_penalty = 0.0
+        recency_penalty = 0.0
 
         if prediction.market == "OVER_2_5":
             home_rate = home.over25_rate
             away_rate = away.over25_rate
+            home_recent = home.recent_over25_rate if home.recent_sample_size >= 5 else home_rate
+            away_recent = away.recent_over25_rate if away.recent_sample_size >= 5 else away_rate
             combined_rate = (home_rate + away_rate) / 2.0
+            recent_combined_rate = (home_recent + away_recent) / 2.0
             avg_total = (home.avg_total_goals + away.avg_total_goals) / 2.0
-            pattern_component = combined_rate * 100.0
+            pattern_component = (0.70 * combined_rate + 0.30 * recent_combined_rate) * 100.0
             context_component = max(0.0, min(100.0, 50.0 + (avg_total - 2.5) * 20.0))
             market_support = (
-                0.35 * home.over25_rate
-                + 0.35 * away.over25_rate
-                + 0.15 * home.btts_rate
-                + 0.15 * away.btts_rate
+                0.25 * home.over25_rate
+                + 0.25 * away.over25_rate
+                + 0.20 * home_recent
+                + 0.20 * away_recent
+                + 0.05 * home.btts_rate
+                + 0.05 * away.btts_rate
             )
 
             if home.sample_size >= 5 and home_rate < 0.50:
@@ -150,16 +170,21 @@ class DeepMatchAnalysisService:
             if avg_total < 2.30:
                 warnings.append("deep_low_total_goals")
 
-            # Sprint 7.1: venue-specific evidence has real weight. A 40% venue
-            # rate now costs points even when the opposite side is very strong.
             if home.sample_size >= 5:
                 side_consistency_penalty += self._shortfall_penalty(home_rate, 0.50, 30.0)
             if away.sample_size >= 5:
                 side_consistency_penalty += self._shortfall_penalty(away_rate, 0.50, 24.0)
             market_support_penalty = self._shortfall_penalty(market_support, 0.62, 24.0)
 
-            # If one side is weak (<50%), an exceptional opposite side alone is
-            # not enough: the combined market support must also compensate.
+            if home.recent_sample_size >= 5:
+                recency_penalty += self._shortfall_penalty(home_recent, 0.40, 20.0)
+                if home_recent <= 0.20:
+                    warnings.append("home_over25_recent_drought")
+            if away.recent_sample_size >= 5:
+                recency_penalty += self._shortfall_penalty(away_recent, 0.40, 20.0)
+                if away_recent <= 0.20:
+                    warnings.append("away_over25_recent_drought")
+
             if home.sample_size >= 6 and away.sample_size >= 6:
                 weak_side = min(home_rate, away_rate)
                 strong_side = max(home_rate, away_rate)
@@ -172,18 +197,27 @@ class DeepMatchAnalysisService:
                     failures.append("deep_over25_low_score_rejected")
                 if weak_side < 0.30 and market_support < 0.55:
                     failures.append("deep_over25_venue_contradiction")
+                if recent_combined_rate <= 0.20 and combined_rate < 0.60:
+                    failures.append("deep_over25_recent_form_rejected")
         else:
             home_rate = home.btts_rate
             away_rate = away.btts_rate
+            home_recent = home.recent_btts_rate if home.recent_sample_size >= 5 else home_rate
+            away_recent = away.recent_btts_rate if away.recent_sample_size >= 5 else away_rate
             combined_rate = (home_rate + away_rate) / 2.0
+            recent_combined_rate = (home_recent + away_recent) / 2.0
             fts = (home.failed_to_score_rate + away.failed_to_score_rate) / 2.0
-            pattern_component = combined_rate * 100.0
-            context_component = max(0.0, min(100.0, 100.0 - fts * 100.0))
+            recent_fts = (home.recent_failed_to_score_rate + away.recent_failed_to_score_rate) / 2.0
+            pattern_component = (0.70 * combined_rate + 0.30 * recent_combined_rate) * 100.0
+            context_fts = 0.70 * fts + 0.30 * recent_fts
+            context_component = max(0.0, min(100.0, 100.0 - context_fts * 100.0))
             market_support = (
-                0.35 * home.btts_rate
-                + 0.35 * away.btts_rate
-                + 0.15 * (1.0 - home.failed_to_score_rate)
-                + 0.15 * (1.0 - away.failed_to_score_rate)
+                0.25 * home.btts_rate
+                + 0.25 * away.btts_rate
+                + 0.20 * home_recent
+                + 0.20 * away_recent
+                + 0.05 * (1.0 - home.failed_to_score_rate)
+                + 0.05 * (1.0 - away.failed_to_score_rate)
             )
 
             if home.sample_size >= 5 and home_rate < 0.50:
@@ -203,6 +237,15 @@ class DeepMatchAnalysisService:
                 side_consistency_penalty += self._shortfall_penalty(away_rate, 0.50, 28.0)
             market_support_penalty = self._shortfall_penalty(market_support, 0.62, 22.0)
 
+            if home.recent_sample_size >= 5:
+                recency_penalty += self._shortfall_penalty(home_recent, 0.40, 18.0)
+                if home_recent <= 0.20:
+                    warnings.append("home_btts_recent_drought")
+            if away.recent_sample_size >= 5:
+                recency_penalty += self._shortfall_penalty(away_recent, 0.40, 18.0)
+                if away_recent <= 0.20:
+                    warnings.append("away_btts_recent_drought")
+
             if home.sample_size >= 6 and away.sample_size >= 6:
                 weak_side = min(home_rate, away_rate)
                 strong_side = max(home_rate, away_rate)
@@ -215,13 +258,13 @@ class DeepMatchAnalysisService:
                     failures.append("deep_btts_scoring_rejected")
                 if weak_side < 0.30 and market_support < 0.55:
                     failures.append("deep_btts_venue_contradiction")
+                if recent_combined_rate <= 0.20 and combined_rate < 0.60:
+                    failures.append("deep_btts_recent_form_rejected")
 
         deep_score = 0.45 * base_score + 0.30 * pattern_component + 0.15 * value_component + 0.10 * context_component
         coverage_penalty = max(0.0, (0.70 - sample_coverage) * 12.0)
-        # Warnings are explanatory. Structural penalties above carry most of the
-        # numerical impact, avoiding double punishment for the same evidence.
         warning_penalty = min(4.0, len(warnings) * 1.0)
-        total_penalty = coverage_penalty + warning_penalty + market_support_penalty + side_consistency_penalty + coherence_penalty
+        total_penalty = coverage_penalty + warning_penalty + market_support_penalty + side_consistency_penalty + coherence_penalty + recency_penalty
         deep_score = max(0.0, min(100.0, deep_score - total_penalty))
 
         evidence = {
@@ -231,12 +274,20 @@ class DeepMatchAnalysisService:
             "away_over25_rate": away.over25_rate,
             "home_btts_rate": home.btts_rate,
             "away_btts_rate": away.btts_rate,
+            "home_recent_n": home.recent_sample_size,
+            "away_recent_n": away.recent_sample_size,
+            "home_recent_over25_rate": home.recent_over25_rate,
+            "away_recent_over25_rate": away.recent_over25_rate,
+            "home_recent_btts_rate": home.recent_btts_rate,
+            "away_recent_btts_rate": away.recent_btts_rate,
             "home_avg_total_goals": home.avg_total_goals,
             "away_avg_total_goals": away.avg_total_goals,
             "home_avg_goals_for": home.avg_goals_for,
             "away_avg_goals_for": away.avg_goals_for,
             "home_failed_to_score_rate": home.failed_to_score_rate,
             "away_failed_to_score_rate": away.failed_to_score_rate,
+            "home_recent_failed_to_score_rate": home.recent_failed_to_score_rate,
+            "away_recent_failed_to_score_rate": away.recent_failed_to_score_rate,
             "home_clean_sheet_rate": home.clean_sheet_rate,
             "away_clean_sheet_rate": away.clean_sheet_rate,
             "home_gei": home.btts_over25_escalation_rate,
@@ -251,6 +302,7 @@ class DeepMatchAnalysisService:
             "market_support_penalty": round(market_support_penalty, 2),
             "side_consistency_penalty": round(side_consistency_penalty, 2),
             "coherence_penalty": round(coherence_penalty, 2),
+            "recency_penalty": round(recency_penalty, 2),
             "total_deep_penalty": round(total_penalty, 2),
         }
         return {
@@ -332,6 +384,7 @@ class DeepMatchAnalysisService:
                 "deep_away_btts": deep_state["away_btts"],
                 "deep_market_support_index": deep_state["market_support_index"],
                 "deep_total_penalty": deep_state["total_penalty"],
+                "deep_recency_penalty": evaluation["evidence"].get("recency_penalty"),
                 "deep_warnings": deep_state["warnings"],
             })
             prediction.score = self._decimal(evaluation["score"])
