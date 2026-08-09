@@ -18,13 +18,18 @@ def _candidate_bookmakers(payload: list[dict]) -> list[dict]:
     return bookmakers
 
 
+def _preferred_bookmakers(payload: list[dict], preferred: str | None = None) -> list[dict]:
+    preferred_name = _normalize(preferred or os.getenv("PREFERRED_BOOKMAKER", "Betano"))
+    return [
+        bookmaker
+        for bookmaker in _candidate_bookmakers(payload)
+        if _normalize(bookmaker.get("name", "")) == preferred_name
+    ]
+
+
 def _select_bookmaker(payload: list[dict], preferred: str | None = None) -> Optional[dict]:
-    preferred = _normalize(preferred or os.getenv("PREFERRED_BOOKMAKER", "Betano"))
-    bookmakers = _candidate_bookmakers(payload)
-    for bookmaker in bookmakers:
-        if _normalize(bookmaker.get("name", "")) == preferred:
-            return bookmaker
-    return None
+    rows = _preferred_bookmakers(payload, preferred)
+    return rows[0] if rows else None
 
 
 def _quotes_from_bookmaker(bookmaker: dict | None) -> dict[str, MarketQuote | None]:
@@ -60,34 +65,40 @@ def _quotes_from_bookmaker(bookmaker: dict | None) -> dict[str, MarketQuote | No
     return {"btts": btts_quote, "over25": over_quote}
 
 
+def _merge_quotes(current: dict[str, MarketQuote | None], incoming: dict[str, MarketQuote | None]) -> dict[str, MarketQuote | None]:
+    return {
+        "btts": current.get("btts") or incoming.get("btts"),
+        "over25": current.get("over25") or incoming.get("over25"),
+    }
+
+
 def parse_quotes(
     payload: list[dict],
     preferred_bookmaker: str | None = None,
     *,
     allow_fallback: bool = False,
 ) -> dict[str, MarketQuote | None]:
-    """Parse BTTS/Over 2.5 quotes, preferring the configured bookmaker.
+    """Parse BTTS/Over 2.5 quotes with independent market fallback.
 
-    By default this remains strict: if the preferred bookmaker is absent, no
-    quote is returned. Selective production enrichment may opt into
-    ``allow_fallback=True`` so the model can use a clearly-labelled reference
-    bookmaker instead of losing edge/EV entirely for that fixture.
+    Multiple records for the same preferred bookmaker are merged. When fallback
+    is enabled, a missing market is filled independently from another bookmaker
+    instead of requiring both markets to come from the same book.
     """
-    preferred = _select_bookmaker(payload, preferred_bookmaker)
-    preferred_quotes = _quotes_from_bookmaker(preferred)
-    if preferred is not None:
-        return preferred_quotes
-    if not allow_fallback:
-        return {"btts": None, "over25": None}
+    quotes = {"btts": None, "over25": None}
+    preferred_rows = _preferred_bookmakers(payload, preferred_bookmaker)
+    for bookmaker in preferred_rows:
+        quotes = _merge_quotes(quotes, _quotes_from_bookmaker(bookmaker))
+        if quotes["btts"] is not None and quotes["over25"] is not None:
+            return quotes
 
-    best_quotes = {"btts": None, "over25": None}
-    best_coverage = 0
+    if not allow_fallback:
+        return quotes
+
+    preferred_name = _normalize(preferred_bookmaker or os.getenv("PREFERRED_BOOKMAKER", "Betano"))
     for bookmaker in _candidate_bookmakers(payload):
-        quotes = _quotes_from_bookmaker(bookmaker)
-        coverage = int(quotes["btts"] is not None) + int(quotes["over25"] is not None)
-        if coverage > best_coverage:
-            best_quotes = quotes
-            best_coverage = coverage
-            if coverage == 2:
-                break
-    return best_quotes
+        if _normalize(bookmaker.get("name", "")) == preferred_name:
+            continue
+        quotes = _merge_quotes(quotes, _quotes_from_bookmaker(bookmaker))
+        if quotes["btts"] is not None and quotes["over25"] is not None:
+            break
+    return quotes
