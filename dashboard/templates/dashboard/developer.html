@@ -13,7 +13,7 @@
       <div>
         <p class="eyebrow">FOOTBALL VALUE ENGINE</p>
         <h1>Developer Diagnostics</h1>
-        <p class="subtitle">Modelo {{ model_version }} · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
+        <p class="subtitle">Modelo {{ model_version }} · Premium Value 1.60–2.40 · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
       </div>
       <a class="action-button link-button" href="/dashboard/">Volver a Premium</a>
     </header>
@@ -25,13 +25,13 @@
         <article class="metric-card"><span>Estado</span><strong>{{ pipeline.status }}</strong><small>{{ pipeline.target_date|date:"d/m/Y" }}</small></article>
         <article class="metric-card"><span>Duración</span><strong>{{ pipeline.duration_seconds }} s</strong><small>{{ pipeline.warning_count }} warnings · {{ pipeline.error_count }} errores</small></article>
         <article class="metric-card"><span>Fixtures</span><strong>{{ pipeline.fixtures_count }}</strong><small>{{ pipeline.predictions_count }} predicciones</small></article>
-        <article class="metric-card"><span>Premium</span><strong>{{ pipeline.premium_count }}</strong><small>{{ pipeline.settled_count }} liquidados</small></article>
+        <article class="metric-card"><span>Premium Value</span><strong>{{ pipeline.premium_count }}</strong><small>Solo Tier A/B · cuota 1.60–2.40</small></article>
       </div>
     </section>
     {% endif %}
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">SPRINT 7.1</p><h2>Deep Match Analysis · Premium actuales</h2></div><span class="count-badge">{{ deep_premium_audit|length }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">PREMIUM VALUE</p><h2>Deep Match Analysis · Picks actuales</h2></div><span class="count-badge">{{ deep_premium_audit|length }}</span></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Partido</th><th>Mercado</th><th>Estado</th><th>Score final</th><th>V8 base</th><th>Support</th><th>Penaliz.</th><th>Home N</th><th>Home O2.5</th><th>Away N</th><th>Away O2.5</th><th>Home BTTS</th><th>Away BTTS</th><th>Advertencias</th></tr></thead>
@@ -51,65 +51,70 @@
               <td>{% if row.away_over25 != None %}{{ row.away_over25|floatformat:3 }}{% else %}—{% endif %}</td>
               <td>{% if row.home_btts != None %}{{ row.home_btts|floatformat:3 }}{% else %}—{% endif %}</td>
               <td>{% if row.away_btts != None %}{{ row.away_btts|floatformat:3 }}{% else %}—{% endif %}</td>
-              <td>
-                {% if row.status != "complete" %}
-                  Deep Analysis pendiente/no disponible
-                {% elif row.failures %}
-                  Rechazado: {{ row.failures|join:", " }}
-                {% elif row.warnings %}
-                  {{ row.warnings|join:", " }}
-                {% else %}
-                  Sin alertas profundas
-                {% endif %}
-              </td>
+              <td>{% if row.failures %}Rechazado: {{ row.failures|join:", " }}{% elif row.warnings %}{{ row.warnings|join:", " }}{% else %}Sin alertas profundas{% endif %}</td>
             </tr>
-            {% empty %}<tr><td colspan="14" class="empty">No hay Premium vigentes con Deep Analysis completo. Ejecuta Generar Picks Premium.</td></tr>{% endfor %}
+            {% empty %}<tr><td colspan="14" class="empty">No hay Premium Value vigentes con Deep Analysis completo.</td></tr>{% endfor %}
           </tbody>
         </table>
       </div>
     </section>
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">SPRINT 6.7–7.1</p><h2>Embudo del modelo</h2></div><span class="count-badge">{{ model_diagnostics.target_date|date:"d/m/Y" }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">EMBUDO</p><h2>Filtro Premium Value</h2></div><span class="count-badge">{{ model_diagnostics.target_date|date:"d/m/Y" }}</span></div>
       <div class="metrics-grid developer-metrics">
         {% for row in model_diagnostics.funnel %}
-        <article class="metric-card"><span>{{ row.label }}</span><strong>{{ row.count }}</strong><small>etapa del filtro Premium</small></article>
+        <article class="metric-card"><span>{{ row.label }}</span><strong>{{ row.count }}</strong><small>etapa secuencial</small></article>
         {% endfor %}
       </div>
     </section>
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">DIAGNÓSTICO</p><h2>Reglas que más están descartando</h2></div></div>
-      <div class="mini-list">
-        {% for row in model_diagnostics.rejection_summary %}
-        <div class="mini-row"><div><strong>{{ row.reason }}</strong><small>{{ row.code }}</small></div><div class="right"><strong>{{ row.count }}</strong><small>predicciones</small></div></div>
-        {% empty %}<p class="empty">No hay rechazos futuros para diagnosticar.</p>{% endfor %}
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">AUDITORÍA</p><h2>Top 5 descartados más cercanos</h2></div><span class="count-badge">{{ model_diagnostics.top_rejected|length }}</span></div>
-      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Score final</th><th>EV</th><th>M. Conf.</th><th>M. Intel.</th><th>GEI</th><th>Low-score</th><th>Motivo</th></tr></thead><tbody>
-        {% for row in model_diagnostics.top_rejected %}<tr>
-          <td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td>
-          <td><span class="market-pill">{{ row.prediction.market }}</span></td>
-          <td>{{ row.prediction.score|floatformat:1 }}</td>
-          <td>{% if row.prediction.expected_value != None %}{{ row.prediction.expected_value|floatformat:3 }}{% else %}—{% endif %}</td>
-          <td>{% if row.market_confidence != None %}{{ row.market_confidence|floatformat:1 }}{% else %}—{% endif %}</td>
-          <td>{% if row.market_intelligence != None %}{{ row.market_intelligence|floatformat:1 }}{% else %}—{% endif %}</td>
-          <td>{% if row.gei != None %}{{ row.gei|floatformat:3 }}{% else %}—{% endif %}</td>
-          <td>{% if row.low_score_rate != None %}{{ row.low_score_rate|floatformat:3 }}{% else %}—{% endif %}</td>
-          <td>{{ row.reason }}{% if row.in_high_recall_pool %} · High Recall{% endif %}</td>
-        </tr>{% empty %}<tr><td colspan="9" class="empty">No hay candidatos descartados para auditar.</td></tr>{% endfor %}
+      <div class="panel-head"><div><p class="eyebrow">PREMIUM SAFE</p><h2>Cuotas 1.30–1.59 · solo informativo</h2></div><span class="count-badge">{{ premium_safe|length }}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>EV</th><th>Score</th><th>Estado</th></tr></thead><tbody>
+        {% for pick in premium_safe %}<tr><td><strong>{{ pick.fixture.home_team.name }}</strong> vs {{ pick.fixture.away_team.name }}</td><td><span class="market-pill">{{ pick.market }}</span></td><td>{{ pick.probability|floatformat:3 }}</td><td>{{ pick.market_odds|floatformat:2 }}</td><td>{{ pick.expected_value|floatformat:3 }}</td><td>{{ pick.score|floatformat:1 }}</td><td>Informativo · no ocupa Top 3</td></tr>
+        {% empty %}<tr><td colspan="7" class="empty">No hay Premium Safe fuertes en este momento.</td></tr>{% endfor %}
       </tbody></table></div>
     </section>
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">DEBUG</p><h2>Candidatos cercanos a Premium</h2></div><span class="count-badge">{{ near_premium|length }}</span></div>
-      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>Edge</th><th>EV</th><th>Score final</th><th>Motivo</th></tr></thead><tbody>{% for row in near_premium %}<tr><td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td><td><span class="market-pill">{{ row.prediction.market }}</span></td><td>{{ row.prediction.probability|floatformat:3 }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td>{% if row.prediction.edge != None %}{{ row.prediction.edge|floatformat:3 }}{% else %}—{% endif %}</td><td>{% if row.prediction.expected_value != None %}{{ row.prediction.expected_value|floatformat:3 }}{% else %}—{% endif %}</td><td><strong>{{ row.prediction.score|floatformat:1 }}</strong></td><td>{{ row.reason }}</td></tr>{% empty %}<tr><td colspan="8" class="empty">No hay candidatos futuros para diagnosticar.</td></tr>{% endfor %}</tbody></table></div>
+      <div class="panel-head"><div><p class="eyebrow">PENDIENTES</p><h2>Cuotas todavía no disponibles</h2></div><span class="count-badge">{{ pending_odds|length }}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Score preliminar</th><th>Estado</th></tr></thead><tbody>
+        {% for pick in pending_odds %}<tr><td><strong>{{ pick.fixture.home_team.name }}</strong> vs {{ pick.fixture.away_team.name }}</td><td><span class="market-pill">{{ pick.market }}</span></td><td>{{ pick.probability|floatformat:3 }}</td><td>{{ pick.score|floatformat:1 }}</td><td>Pendiente de cuota · no rankeable</td></tr>
+        {% empty %}<tr><td colspan="5" class="empty">No hay candidatos pendientes de cuota.</td></tr>{% endfor %}
+      </tbody></table></div>
     </section>
 
-    <footer>Vista técnica · Score final = salida única después de V8 + Deep Analysis. Los candidatos rechazados no son picks operativos.</footer>
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">PENDIENTES</p><h2>Premium Value esperando Deep Analysis</h2></div><span class="count-badge">{{ pending_deep|length }}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Cuota</th><th>EV</th><th>Score preliminar</th><th>Estado</th></tr></thead><tbody>
+        {% for row in pending_deep %}<tr><td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td><td><span class="market-pill">{{ row.prediction.market }}</span></td><td>{{ row.prediction.market_odds|floatformat:2 }}</td><td>{{ row.prediction.expected_value|floatformat:3 }}</td><td>{{ row.prediction.score|floatformat:1 }}</td><td>Deep Analysis pendiente · no es Premium aún</td></tr>
+        {% empty %}<tr><td colspan="6" class="empty">No hay Premium Value pendientes de Deep Analysis.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">AUDITORÍA DE CUOTAS</p><h2>Fuera de Premium Value</h2></div><span class="count-badge">{{ model_diagnostics.odds_rejected|length }}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Cuota</th><th>Prob.</th><th>Score preliminar</th><th>Motivo</th></tr></thead><tbody>
+        {% for row in model_diagnostics.odds_rejected %}<tr><td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td><td><span class="market-pill">{{ row.prediction.market }}</span></td><td>{% if row.prediction.market_odds != None %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td>{{ row.prediction.probability|floatformat:3 }}</td><td>{{ row.prediction.score|floatformat:1 }}</td><td>{{ row.reason }}</td></tr>
+        {% empty %}<tr><td colspan="6" class="empty">No hay rechazos por cuota para auditar.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">AUDITORÍA PREMIUM VALUE</p><h2>Top 5 descartados más cercanos</h2></div><span class="count-badge">{{ model_diagnostics.top_rejected|length }}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Cuota</th><th>Score final</th><th>EV</th><th>M. Conf.</th><th>M. Intel.</th><th>GEI</th><th>Low-score</th><th>Motivo</th></tr></thead><tbody>
+        {% for row in model_diagnostics.top_rejected %}<tr>
+          <td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td><td><span class="market-pill">{{ row.prediction.market }}</span></td><td>{{ row.prediction.market_odds|floatformat:2 }}</td><td>{{ row.prediction.score|floatformat:1 }}</td><td>{% if row.prediction.expected_value != None %}{{ row.prediction.expected_value|floatformat:3 }}{% else %}—{% endif %}</td><td>{% if row.market_confidence != None %}{{ row.market_confidence|floatformat:1 }}{% else %}—{% endif %}</td><td>{% if row.market_intelligence != None %}{{ row.market_intelligence|floatformat:1 }}{% else %}—{% endif %}</td><td>{% if row.gei != None %}{{ row.gei|floatformat:3 }}{% else %}—{% endif %}</td><td>{% if row.low_score_rate != None %}{{ row.low_score_rate|floatformat:3 }}{% else %}—{% endif %}</td><td>{{ row.reason }}{% if row.in_high_recall_pool %} · High Recall{% endif %}</td>
+        </tr>{% empty %}<tr><td colspan="10" class="empty">No hay candidatos Premium Value descartados para auditar.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">DEBUG</p><h2>Candidatos cercanos a Premium Value</h2></div><span class="count-badge">{{ near_premium|length }}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Mercado</th><th>Prob.</th><th>Cuota</th><th>Edge</th><th>EV</th><th>Score final</th><th>Motivo</th></tr></thead><tbody>{% for row in near_premium %}<tr><td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td><td><span class="market-pill">{{ row.prediction.market }}</span></td><td>{{ row.prediction.probability|floatformat:3 }}</td><td>{{ row.prediction.market_odds|floatformat:2 }}</td><td>{% if row.prediction.edge != None %}{{ row.prediction.edge|floatformat:3 }}{% else %}—{% endif %}</td><td>{{ row.prediction.expected_value|floatformat:3 }}</td><td><strong>{{ row.prediction.score|floatformat:1 }}</strong></td><td>{{ row.reason }}</td></tr>{% empty %}<tr><td colspan="8" class="empty">No hay candidatos Premium Value futuros para diagnosticar.</td></tr>{% endfor %}</tbody></table></div>
+    </section>
+
+    <footer>Premium Value = cuota 1.60–2.40 + EV ≥ 3% + Deep Analysis aprobado. Premium Safe es solo informativo y nunca ocupa uno de los tres picks del día.</footer>
   </main>
 </body>
 </html>
