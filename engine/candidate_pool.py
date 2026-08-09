@@ -9,16 +9,18 @@ from django.utils import timezone
 from .competition_quality import classify_competition
 from .models import Prediction
 from .score_v8 import V8_MODEL_VERSION
+from .value_policy import PREMIUM_MIN_EV, is_premium_value_odds
 
 
 @dataclass(frozen=True)
 class CandidatePoolRule:
-    # Sprint 6.9: discovery should maximize recall. Expensive enrichment can still
-    # consume a smaller top slice of this ranked pool.
+    # Discovery can remain broad, but expensive Deep Analysis may request the
+    # Premium Value band explicitly so low odds never consume scarce slots.
     min_score: float = 78.0
     min_edge: float = 0.05
-    min_ev: float = 0.06
+    min_ev: float = float(PREMIUM_MIN_EV)
     limit: int = 60
+    require_premium_value_odds: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,10 +49,10 @@ def _preliminary_score(prediction: Prediction) -> float:
     sample_confidence = max(0.0, min(float(reasons.get("venue_sample_confidence") or 0.0), 1.0)) * 100.0
 
     composite = (
-        0.36 * score
-        + 0.20 * probability
-        + 0.18 * edge_component
-        + 0.17 * ev_component
+        0.30 * score
+        + 0.15 * probability
+        + 0.22 * edge_component
+        + 0.24 * ev_component
         + 0.05 * data_quality
         + 0.04 * sample_confidence
     )
@@ -65,8 +67,9 @@ def high_recall_candidate_pool(
 ) -> list[CandidatePoolEntry]:
     """Return a diverse high-recall fixture pool.
 
-    Entry is score OR edge OR EV, never a single score-only cutoff. One market is
-    kept per fixture at this stage; official competition filtering remains hard.
+    One market is kept per fixture. When ``require_premium_value_odds`` is true,
+    only quoted markets inside 1.60-2.40 with minimum positive value enter the
+    expensive enrichment/Deep Analysis queue.
     """
     rule = rule or CandidatePoolRule()
     start, end = _bounds(target_date)
@@ -90,6 +93,11 @@ def high_recall_candidate_pool(
     for prediction in predictions.iterator(chunk_size=500):
         if classify_competition(prediction.fixture).excluded:
             continue
+        if rule.require_premium_value_odds:
+            if not is_premium_value_odds(prediction.market_odds):
+                continue
+            if prediction.expected_value is None or float(prediction.expected_value) < rule.min_ev:
+                continue
 
         reasons: list[str] = []
         if float(prediction.score or 0.0) >= rule.min_score:
