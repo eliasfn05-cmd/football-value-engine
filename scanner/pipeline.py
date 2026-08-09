@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
 from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
+from engine.deep_analysis import DEEP_ANALYSIS_VERSION
 from engine.models import DailyPremiumSelection, Fixture, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.models import PipelineRun, PipelineStageRun, PremiumGenerationJob
@@ -29,7 +30,8 @@ class DailyPipeline:
     """Production orchestrator for the football-value workflow."""
 
     MODES = {"full", "morning", "refresh", "settlement", "detailed"}
-    INTERACTIVE_POOL_LIMIT = 12
+    INTERACTIVE_POOL_LIMIT = 16
+    DEEP_ANALYSIS_LIMIT = 6
 
     def __init__(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0):
         self.max_attempts = max(1, int(max_attempts))
@@ -159,6 +161,28 @@ class DailyPipeline:
             {"rescored": rescored, "raw_tier_a": premium, "fixture_ids": fixture_ids},
         )
 
+    def _deep_analysis(self, target_date: date) -> StageResult:
+        self._run_command(
+            "deep_analyze_candidates",
+            target_date=target_date.isoformat(),
+            limit=self.DEEP_ANALYSIS_LIMIT,
+        )
+        start, end = self._date_bounds(target_date)
+        future_start = max(start, timezone.now())
+        analyzed = Prediction.objects.filter(
+            model_version=V8_MODEL_VERSION,
+            fixture__kickoff__gte=future_start,
+            fixture__kickoff__lt=end,
+            reasons__deep_analysis_version=DEEP_ANALYSIS_VERSION,
+        )
+        count = analyzed.count()
+        preferred = analyzed.filter(reasons__deep_preferred_market=True).count()
+        return StageResult(
+            count,
+            f"{count} predictions deep-analyzed; {preferred} preferred fixture markets",
+            {"predictions": count, "preferred_markets": preferred, "version": DEEP_ANALYSIS_VERSION},
+        )
+
     def _select_premium(self, target_date: date) -> StageResult:
         self._run_command("select_premium", target_date=target_date.isoformat(), max_picks=3)
         rows = DailyPremiumSelection.objects.filter(
@@ -253,6 +277,7 @@ class DailyPipeline:
             return [
                 ("ENRICH_CANDIDATES", lambda: self._enrich(target_date), False),
                 ("RESCORE_V8", lambda: self._rescore_enriched(target_date), True),
+                ("DEEP_ANALYSIS", lambda: self._deep_analysis(target_date), True),
                 ("SELECT_PREMIUM", lambda: self._select_premium(target_date), True),
             ]
         if mode == "settlement":
@@ -264,6 +289,7 @@ class DailyPipeline:
             return [
                 ("INGEST", lambda: self._ingest(target_date, fixtures_only=False), True),
                 ("SCORE_V8", lambda: self._score(target_date), True),
+                ("DEEP_ANALYSIS", lambda: self._deep_analysis(target_date), True),
                 ("SELECT_PREMIUM", lambda: self._select_premium(target_date), True),
                 ("SETTLE", lambda: self._settle(target_date), False),
                 ("LEARNING", lambda: self._learning(target_date), False),
@@ -273,6 +299,7 @@ class DailyPipeline:
             ("SCORE_V8", lambda: self._score(target_date), True),
             ("ENRICH_CANDIDATES", lambda: self._enrich(target_date), False),
             ("RESCORE_V8", lambda: self._rescore_enriched(target_date), True),
+            ("DEEP_ANALYSIS", lambda: self._deep_analysis(target_date), True),
             ("SELECT_PREMIUM", lambda: self._select_premium(target_date), True),
             ("SETTLE", lambda: self._settle(target_date), False),
             ("LEARNING", lambda: self._learning(target_date), False),
@@ -290,7 +317,7 @@ class DailyPipeline:
         ingest_failed = False
         warning_count = 0
         error_count = 0
-        dependent_on_ingest = {"SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8", "SELECT_PREMIUM"}
+        dependent_on_ingest = {"SCORE_V8", "ENRICH_CANDIDATES", "RESCORE_V8", "DEEP_ANALYSIS", "SELECT_PREMIUM"}
 
         for index, (name, fn, required) in enumerate(stages, start=1):
             start_progress = max(2, int(((index - 1) / max(1, len(stages))) * 95))
