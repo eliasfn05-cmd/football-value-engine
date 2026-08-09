@@ -49,7 +49,9 @@ class Command(BaseCommand):
             raise CommandError("--date must use YYYY-MM-DD") from exc
         interactive_fast = self._interactive_fast_enabled()
         requested_limit = max(1, min(int(options["limit"]), 50))
-        limit = min(requested_limit, INTERACTIVE_LIMIT) if interactive_fast else requested_limit
+        # Interactive generation must never be throttled by an older caller's
+        # smaller limit. Always sweep the full configured high-recall universe.
+        limit = INTERACTIVE_LIMIT if interactive_fast else requested_limit
         start = timezone.make_aware(datetime.combine(target_date, time.min)); end = start + timedelta(days=1); now = timezone.now(); future_start = max(start, now)
         entry_reasons_by_fixture = {}
         if interactive_fast:
