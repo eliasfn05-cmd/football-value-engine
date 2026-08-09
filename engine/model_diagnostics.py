@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from .candidate_pool import CandidatePoolRule, high_recall_candidate_pool
 from .competition_quality import classify_competition
+from .deep_analysis import DEEP_ANALYSIS_VERSION
 from .models import Prediction
 from .premium_selection import DailyPremiumSelector
 from .score_v8 import V8_MODEL_VERSION
@@ -39,12 +40,20 @@ FAILURE_LABELS = {
     "edge_below_premium_floor": "Edge por debajo de 5%",
     "ev_below_premium_floor": "EV por debajo de 6%",
     "probability_below_premium_floor": "Probabilidad por debajo del piso Premium",
-    "score_below_dynamic_floor": "Score por debajo del piso dinámico 80",
+    "score_below_dynamic_floor": "Score final por debajo del piso dinámico 80",
+    "deep_analysis_pending": "Deep Analysis pendiente/no disponible",
+    "deep_market_not_preferred": "Mercado descartado: otro mercado del partido tiene mejor Deep Score",
+    "deep_analysis_rejected": "Deep Analysis rechazó el mercado",
+    "deep_over25_pattern_rejected": "Deep: patrón Over 2.5 insuficiente",
+    "deep_over25_low_score_rejected": "Deep: perfil de pocos goles incompatible con Over 2.5",
+    "deep_btts_pattern_rejected": "Deep: patrón BTTS insuficiente",
+    "deep_btts_scoring_rejected": "Deep: riesgo de quedarse sin marcar incompatible con BTTS",
+    "premium_threshold_combination": "No supera la combinación de umbrales Premium",
 }
 
 
 class ModelDiagnosticsService:
-    """Explain the real sequential Premium funnel."""
+    """Explain the real sequential Premium funnel, including Sprint 7.0."""
 
     def __init__(self, model_version: str = V8_MODEL_VERSION):
         self.model_version = model_version
@@ -66,6 +75,23 @@ class ModelDiagnosticsService:
         if prediction.market == "OVER_2_5":
             return p >= 0.61
         return False
+
+    @staticmethod
+    def _deep_state(prediction: Prediction) -> dict[str, Any]:
+        reasons = prediction.reasons or {}
+        state = reasons.get("deep_analysis")
+        if isinstance(state, dict) and state.get("version") == DEEP_ANALYSIS_VERSION:
+            return state
+        if reasons.get("deep_analysis_version") != DEEP_ANALYSIS_VERSION:
+            return {"status": "pending"}
+        return {
+            "status": reasons.get("deep_analysis_status") or "complete",
+            "passed": reasons.get("deep_analysis_passed"),
+            "preferred_market": reasons.get("deep_preferred_market"),
+            "score": reasons.get("deep_score"),
+            "warnings": reasons.get("deep_analysis_warnings") or [],
+            "failures": reasons.get("deep_analysis_failures") or [],
+        }
 
     def build(self, target_date=None, *, top_rejected: int = 5) -> dict[str, Any]:
         target_date = target_date or timezone.localdate()
@@ -96,10 +122,11 @@ class ModelDiagnosticsService:
         pool_prediction_ids = {entry.prediction_id for entry in discovery_pool}
         pool_predictions = [p for p in official if p.id in pool_prediction_ids]
 
-        # Sequential stages: every next count is a subset of the previous stage.
         hard_data_pass = []
         confidence_pass = []
         intelligence_pass = []
+        deep_complete = []
+        deep_preferred = []
         value_pass = []
         premium_eligible = []
         rejection_counter: Counter[str] = Counter()
@@ -108,10 +135,7 @@ class ModelDiagnosticsService:
         for prediction in pool_predictions:
             reasons = prediction.reasons or {}
             failures = list(reasons.get("v8_gate_failures") or [])
-            hard_data_failures = [
-                item for item in failures
-                if item in {"no_home_venue_history", "no_away_venue_history"}
-            ]
+            hard_data_failures = [item for item in failures if item in {"no_home_venue_history", "no_away_venue_history"}]
             if hard_data_failures:
                 continue
             hard_data_pass.append(prediction)
@@ -123,6 +147,14 @@ class ModelDiagnosticsService:
             if reasons.get("market_intelligence_passed") is not True:
                 continue
             intelligence_pass.append(prediction)
+
+            deep = self._deep_state(prediction)
+            if deep.get("status") != "complete":
+                continue
+            deep_complete.append(prediction)
+            if deep.get("passed") is not True or deep.get("preferred_market") is not True:
+                continue
+            deep_preferred.append(prediction)
 
             if not DailyPremiumSelector._passes_hard_value_floors(prediction):
                 continue
@@ -137,8 +169,16 @@ class ModelDiagnosticsService:
             reasons = prediction.reasons or {}
             failures = list(reasons.get("v8_gate_failures") or [])
             soft_warnings = list(reasons.get("v8_soft_warnings") or [])
+            deep = self._deep_state(prediction)
             if failures:
                 main = failures[0]
+            elif deep.get("status") != "complete":
+                main = "deep_analysis_pending"
+            elif deep.get("passed") is False:
+                deep_failures = list(deep.get("failures") or [])
+                main = deep_failures[0] if deep_failures else "deep_analysis_rejected"
+            elif deep.get("preferred_market") is False:
+                main = "deep_market_not_preferred"
             elif prediction.market_odds is None:
                 main = "missing_market_odds"
             elif not self._probability_ok(prediction):
@@ -165,6 +205,9 @@ class ModelDiagnosticsService:
                 "low_score_rate": (reasons.get("market_intelligence_evidence") or {}).get("combined_low_score_rate"),
                 "sample_confidence": reasons.get("venue_sample_confidence"),
                 "evidence_penalty": reasons.get("evidence_penalty"),
+                "deep_status": deep.get("status"),
+                "deep_score": deep.get("score"),
+                "deep_preferred": deep.get("preferred_market"),
                 "in_high_recall_pool": prediction.id in pool_prediction_ids,
             })
 
@@ -187,6 +230,8 @@ class ModelDiagnosticsService:
                 {"label": "Historial mínimo disponible", "count": len({p.fixture_id for p in hard_data_pass})},
                 {"label": "Market Confidence OK", "count": len({p.fixture_id for p in confidence_pass})},
                 {"label": "Market Intelligence OK", "count": len({p.fixture_id for p in intelligence_pass})},
+                {"label": "Deep Analysis completo", "count": len({p.fixture_id for p in deep_complete})},
+                {"label": "Mercado Deep preferido", "count": len({p.fixture_id for p in deep_preferred})},
                 {"label": "Valor mínimo EV/Edge/Prob.", "count": len({p.fixture_id for p in value_pass})},
                 {"label": "Elegibles Premium (piso dinámico)", "count": len({p.fixture_id for p in premium_eligible})},
             ],
