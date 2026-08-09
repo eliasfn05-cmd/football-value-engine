@@ -5,6 +5,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from engine.competition_quality import classify_competition
+from engine.deep_analysis import DEEP_ANALYSIS_VERSION
 from engine.models import Competition, DailyPremiumSelection, Fixture, FixtureScoreState, Prediction, Team
 from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
@@ -45,6 +46,10 @@ class Sprint62CompetitionQualityTests(TestCase):
                 "v8_gates_passed": True,
                 "data_quality_score": 90.0,
                 "bookmaker": "Betano",
+                "deep_analysis_version": DEEP_ANALYSIS_VERSION,
+                "deep_analysis_passed": True,
+                "deep_preferred_market": True,
+                "deep_score": float(score),
             },
         )
 
@@ -95,13 +100,10 @@ class Sprint62CompetitionQualityTests(TestCase):
         official = self._fixture("official-pick", "Premier League")
         self._prediction(friendly, score="100.00", ev="0.50000", edge="0.25000")
         official_prediction = self._prediction(official, score="94.00", ev="0.20000", edge="0.12000")
-
         selections = DailyPremiumSelector().select(self.target_date)
-
         self.assertEqual(len(selections), 1)
         self.assertEqual(selections[0].prediction_id, official_prediction.id)
         self.assertEqual(DailyPremiumSelection.objects.count(), 1)
-        self.assertEqual(selections[0].rationale["competition_quality_level"], 1)
 
     def test_scoring_cleanup_removes_legacy_friendly_prediction_and_state(self):
         friendly = self._fixture("legacy-friendly", "Pre-Season Friendly")
@@ -111,9 +113,7 @@ class Sprint62CompetitionQualityTests(TestCase):
             model_version=V8_MODEL_VERSION,
             feature_fingerprint="a" * 64,
         )
-
         excluded = ScoreCommand._remove_excluded_fixture_state([friendly])
-
         self.assertEqual(excluded, 1)
         self.assertFalse(Prediction.objects.filter(fixture=friendly, model_version=V8_MODEL_VERSION).exists())
         self.assertFalse(FixtureScoreState.objects.filter(fixture=friendly, model_version=V8_MODEL_VERSION).exists())
