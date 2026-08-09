@@ -12,7 +12,7 @@ from .models import Fixture, Prediction, Team
 from .score_v8 import V8_MODEL_VERSION
 
 
-DEEP_ANALYSIS_VERSION = "sprint7.0"
+DEEP_ANALYSIS_VERSION = "sprint7.1"
 
 
 @dataclass(frozen=True)
@@ -30,12 +30,7 @@ class DeepVenueProfile:
 
 
 class DeepMatchAnalysisService:
-    """Second-pass market validation using up to 10 official venue matches.
-
-    V8 remains the quantitative core. Sprint 7.0 validates only the strongest
-    fixtures with deeper persisted history and chooses one preferred market per
-    fixture before the operational Premium ranking.
-    """
+    """Second-pass market validation using up to 10 official venue matches."""
 
     def __init__(self, sample_size: int = 10):
         self.sample_size = max(5, min(int(sample_size), 10))
@@ -46,12 +41,6 @@ class DeepMatchAnalysisService:
 
     @staticmethod
     def _base_score(prediction: Prediction) -> float:
-        """Return the immutable pre-deep V8 score.
-
-        Refresh runs may execute Deep Analysis repeatedly. Reusing prediction.score
-        would compound the deep adjustment on every click, so the first V8 score is
-        preserved and reused as the only base for all subsequent deep evaluations.
-        """
         reasons = prediction.reasons or {}
         stored = reasons.get("score_before_deep_analysis")
         if stored is not None:
@@ -121,17 +110,20 @@ class DeepMatchAnalysisService:
         ev = max(0.0, float(prediction.expected_value or 0.0))
         return min(100.0, 55.0 * min(edge / 0.15, 1.0) + 45.0 * min(ev / 0.25, 1.0))
 
-    def _evaluate_market(
-        self,
-        prediction: Prediction,
-        home: DeepVenueProfile,
-        away: DeepVenueProfile,
-    ) -> dict[str, Any]:
+    @staticmethod
+    def _shortfall_penalty(rate: float, target: float, weight: float) -> float:
+        """Continuous penalty: small shortfalls cost little; structural gaps cost more."""
+        return max(0.0, (target - rate) * weight)
+
+    def _evaluate_market(self, prediction: Prediction, home: DeepVenueProfile, away: DeepVenueProfile) -> dict[str, Any]:
         base_score = self._base_score(prediction)
         value_component = self._value_component(prediction)
         sample_coverage = min(home.sample_size / self.sample_size, 1.0) * 0.5 + min(away.sample_size / self.sample_size, 1.0) * 0.5
         failures: list[str] = []
         warnings: list[str] = []
+        market_support_penalty = 0.0
+        side_consistency_penalty = 0.0
+        coherence_penalty = 0.0
 
         if prediction.market == "OVER_2_5":
             home_rate = home.over25_rate
@@ -140,19 +132,46 @@ class DeepMatchAnalysisService:
             avg_total = (home.avg_total_goals + away.avg_total_goals) / 2.0
             pattern_component = combined_rate * 100.0
             context_component = max(0.0, min(100.0, 50.0 + (avg_total - 2.5) * 20.0))
+            market_support = (
+                0.35 * home.over25_rate
+                + 0.35 * away.over25_rate
+                + 0.15 * home.btts_rate
+                + 0.15 * away.btts_rate
+            )
 
-            if home.sample_size >= 5 and home_rate < 0.40:
+            if home.sample_size >= 5 and home_rate < 0.50:
                 warnings.append("home_over25_deep_low")
-            if away.sample_size >= 5 and away_rate < 0.40:
+            if away.sample_size >= 5 and away_rate < 0.50:
                 warnings.append("away_over25_deep_low")
-            if combined_rate < 0.45:
+            if combined_rate < 0.50:
                 warnings.append("combined_over25_deep_low")
+            if market_support < 0.58:
+                warnings.append("over25_market_support_low")
             if avg_total < 2.30:
                 warnings.append("deep_low_total_goals")
-            if home.sample_size >= 6 and away.sample_size >= 6 and combined_rate < 0.38:
-                failures.append("deep_over25_pattern_rejected")
-            if home.sample_size >= 6 and away.sample_size >= 6 and avg_total < 2.05:
-                failures.append("deep_over25_low_score_rejected")
+
+            # Sprint 7.1: venue-specific evidence has real weight. A 40% venue
+            # rate now costs points even when the opposite side is very strong.
+            if home.sample_size >= 5:
+                side_consistency_penalty += self._shortfall_penalty(home_rate, 0.50, 30.0)
+            if away.sample_size >= 5:
+                side_consistency_penalty += self._shortfall_penalty(away_rate, 0.50, 24.0)
+            market_support_penalty = self._shortfall_penalty(market_support, 0.62, 24.0)
+
+            # If one side is weak (<50%), an exceptional opposite side alone is
+            # not enough: the combined market support must also compensate.
+            if home.sample_size >= 6 and away.sample_size >= 6:
+                weak_side = min(home_rate, away_rate)
+                strong_side = max(home_rate, away_rate)
+                if weak_side < 0.50 and strong_side >= 0.80 and market_support < 0.65:
+                    coherence_penalty = 3.0
+                    warnings.append("over25_one_sided_support")
+                if combined_rate < 0.38:
+                    failures.append("deep_over25_pattern_rejected")
+                if avg_total < 2.05:
+                    failures.append("deep_over25_low_score_rejected")
+                if weak_side < 0.30 and market_support < 0.55:
+                    failures.append("deep_over25_venue_contradiction")
         else:
             home_rate = home.btts_rate
             away_rate = away.btts_rate
@@ -160,29 +179,50 @@ class DeepMatchAnalysisService:
             fts = (home.failed_to_score_rate + away.failed_to_score_rate) / 2.0
             pattern_component = combined_rate * 100.0
             context_component = max(0.0, min(100.0, 100.0 - fts * 100.0))
+            market_support = (
+                0.35 * home.btts_rate
+                + 0.35 * away.btts_rate
+                + 0.15 * (1.0 - home.failed_to_score_rate)
+                + 0.15 * (1.0 - away.failed_to_score_rate)
+            )
 
-            if home.sample_size >= 5 and home_rate < 0.40:
+            if home.sample_size >= 5 and home_rate < 0.50:
                 warnings.append("home_btts_deep_low")
-            if away.sample_size >= 5 and away_rate < 0.40:
+            if away.sample_size >= 5 and away_rate < 0.50:
                 warnings.append("away_btts_deep_low")
-            if combined_rate < 0.45:
+            if combined_rate < 0.50:
                 warnings.append("combined_btts_deep_low")
+            if market_support < 0.58:
+                warnings.append("btts_market_support_low")
             if fts > 0.35:
                 warnings.append("deep_failed_to_score_high")
-            if home.sample_size >= 6 and away.sample_size >= 6 and combined_rate < 0.38:
-                failures.append("deep_btts_pattern_rejected")
-            if home.sample_size >= 6 and away.sample_size >= 6 and fts > 0.45:
-                failures.append("deep_btts_scoring_rejected")
 
-        deep_score = (
-            0.45 * base_score
-            + 0.30 * pattern_component
-            + 0.15 * value_component
-            + 0.10 * context_component
-        )
+            if home.sample_size >= 5:
+                side_consistency_penalty += self._shortfall_penalty(home_rate, 0.50, 28.0)
+            if away.sample_size >= 5:
+                side_consistency_penalty += self._shortfall_penalty(away_rate, 0.50, 28.0)
+            market_support_penalty = self._shortfall_penalty(market_support, 0.62, 22.0)
+
+            if home.sample_size >= 6 and away.sample_size >= 6:
+                weak_side = min(home_rate, away_rate)
+                strong_side = max(home_rate, away_rate)
+                if weak_side < 0.50 and strong_side >= 0.80 and market_support < 0.65:
+                    coherence_penalty = 3.0
+                    warnings.append("btts_one_sided_support")
+                if combined_rate < 0.38:
+                    failures.append("deep_btts_pattern_rejected")
+                if fts > 0.45:
+                    failures.append("deep_btts_scoring_rejected")
+                if weak_side < 0.30 and market_support < 0.55:
+                    failures.append("deep_btts_venue_contradiction")
+
+        deep_score = 0.45 * base_score + 0.30 * pattern_component + 0.15 * value_component + 0.10 * context_component
         coverage_penalty = max(0.0, (0.70 - sample_coverage) * 12.0)
-        warning_penalty = min(12.0, len(warnings) * 3.0)
-        deep_score = max(0.0, min(100.0, deep_score - coverage_penalty - warning_penalty))
+        # Warnings are explanatory. Structural penalties above carry most of the
+        # numerical impact, avoiding double punishment for the same evidence.
+        warning_penalty = min(4.0, len(warnings) * 1.0)
+        total_penalty = coverage_penalty + warning_penalty + market_support_penalty + side_consistency_penalty + coherence_penalty
+        deep_score = max(0.0, min(100.0, deep_score - total_penalty))
 
         evidence = {
             "home_sample": home.sample_size,
@@ -202,11 +242,16 @@ class DeepMatchAnalysisService:
             "home_gei": home.btts_over25_escalation_rate,
             "away_gei": away.btts_over25_escalation_rate,
             "sample_coverage": round(sample_coverage, 3),
+            "market_support_index": round(market_support, 3),
             "pattern_component": round(pattern_component, 2),
             "context_component": round(context_component, 2),
             "value_component": round(value_component, 2),
             "coverage_penalty": round(coverage_penalty, 2),
             "warning_penalty": round(warning_penalty, 2),
+            "market_support_penalty": round(market_support_penalty, 2),
+            "side_consistency_penalty": round(side_consistency_penalty, 2),
+            "coherence_penalty": round(coherence_penalty, 2),
+            "total_deep_penalty": round(total_penalty, 2),
         }
         return {
             "passed": not failures,
@@ -235,6 +280,8 @@ class DeepMatchAnalysisService:
             "away_over25": evidence.get("away_over25_rate"),
             "home_btts": evidence.get("home_btts_rate"),
             "away_btts": evidence.get("away_btts_rate"),
+            "market_support_index": evidence.get("market_support_index"),
+            "total_penalty": evidence.get("total_deep_penalty"),
             "evidence": evidence,
         }
 
@@ -250,19 +297,14 @@ class DeepMatchAnalysisService:
 
         evaluations: list[tuple[Prediction, dict[str, Any]]] = []
         for prediction in predictions:
-            evaluation = self._evaluate_market(prediction, home, away)
-            evaluations.append((prediction, evaluation))
+            evaluations.append((prediction, self._evaluate_market(prediction, home, away)))
 
         eligible = [(p, e) for p, e in evaluations if e["passed"] and p.market_odds is not None]
         preferred_id = None
         if eligible:
             preferred_id = max(
                 eligible,
-                key=lambda item: (
-                    item[1]["score"],
-                    float(item[0].expected_value or 0.0),
-                    float(item[0].edge or 0.0),
-                ),
+                key=lambda item: (item[1]["score"], float(item[0].expected_value or 0.0), float(item[0].edge or 0.0)),
             )[0].id
 
         updated: list[Prediction] = []
@@ -282,16 +324,16 @@ class DeepMatchAnalysisService:
                 "score_before_deep_analysis": original_v8_score,
                 "deep_score": evaluation["score"],
                 "deep_preferred_market": preferred,
-                # Explicit persisted fields requested by Sprint 7.0 closure.
                 "deep_home_n": deep_state["home_n"],
                 "deep_away_n": deep_state["away_n"],
                 "deep_home_over25": deep_state["home_over25"],
                 "deep_away_over25": deep_state["away_over25"],
                 "deep_home_btts": deep_state["home_btts"],
                 "deep_away_btts": deep_state["away_btts"],
+                "deep_market_support_index": deep_state["market_support_index"],
+                "deep_total_penalty": deep_state["total_penalty"],
                 "deep_warnings": deep_state["warnings"],
             })
-            # Prediction.score is the single final score used by Premium, Audit and Debug.
             prediction.score = self._decimal(evaluation["score"])
             prediction.reasons = reasons
             prediction.save(update_fields=["score", "reasons"])
