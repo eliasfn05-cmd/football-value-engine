@@ -21,9 +21,9 @@ HISTORY_FETCH_LAST = 20
 HISTORY_WORKERS = 5
 STANDINGS_MAX_AGE_HOURS = 6
 INTERACTIVE_LIMIT = 40
-INTERACTIVE_MIN_SCORE = 78.0
-INTERACTIVE_MIN_EDGE = 0.05
-INTERACTIVE_MIN_EV = 0.06
+INTERACTIVE_MIN_SCORE = 68.0
+INTERACTIVE_MIN_EDGE = 0.04
+INTERACTIVE_MIN_EV = 0.03
 INTERACTIVE_LINEUP_WINDOW_HOURS = 2
 
 class Command(BaseCommand):
@@ -49,8 +49,8 @@ class Command(BaseCommand):
             raise CommandError("--date must use YYYY-MM-DD") from exc
         interactive_fast = self._interactive_fast_enabled()
         requested_limit = max(1, min(int(options["limit"]), 50))
-        # Interactive generation must never be throttled by an older caller's
-        # smaller limit. Always sweep the full configured high-recall universe.
+        # Sprint 7.4: interactive generation always sweeps the full professional
+        # discovery universe, while the final Premium selector remains strict.
         limit = INTERACTIVE_LIMIT if interactive_fast else requested_limit
         start = timezone.make_aware(datetime.combine(target_date, time.min)); end = start + timedelta(days=1); now = timezone.now(); future_start = max(start, now)
         entry_reasons_by_fixture = {}
@@ -83,7 +83,8 @@ class Command(BaseCommand):
             if raw_by_id:
                 _,delta=ingestion._bulk_ingest_fixtures(list(raw_by_id.values())); history_saved=int(delta.get("created",0))+int(delta.get("changed",0))
         for index, fixture in enumerate(fixtures,start=1):
-            self.stdout.write(f"[enrich] {index}/{len(fixtures)} {fixture.home_team.name} vs {fixture.away_team.name}")
+            reasons=entry_reasons_by_fixture.get(fixture.id, ())
+            self.stdout.write(f"[enrich] {index}/{len(fixtures)} {fixture.home_team.name} vs {fixture.away_team.name} reasons={','.join(reasons) if reasons else '-'}")
             try:
                 primary_payload=provider.fixture_odds(fixture.external_id)
                 strict=parse_quotes(primary_payload)
