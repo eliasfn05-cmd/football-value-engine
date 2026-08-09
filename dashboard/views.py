@@ -9,6 +9,7 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
 from engine.model_diagnostics import ModelDiagnosticsService
 from engine.models import DailyPremiumSelection, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
@@ -55,6 +56,41 @@ def _interactive_pipeline_mode(target_date) -> str:
     return "refresh" if exists else "full"
 
 
+def _validated_pending_odds(*, limit: int = 20):
+    """Only show missing prices that can still become operational Premium picks.
+
+    Low-probability/low-score rows are not an information problem: they already
+    failed discovery and must be treated as discarded, not as pending. This uses
+    the same High Recall Candidate Pool as enrichment so dashboard and pipeline
+    cannot disagree about which unpriced markets deserve an odds lookup.
+    """
+    today = timezone.localdate()
+    pool = high_recall_candidate_pool(
+        today,
+        rule=CandidatePoolRule(limit=200),
+        model_version=V8_MODEL_VERSION,
+    )
+    prediction_ids = [entry.prediction_id for entry in pool]
+    if not prediction_ids:
+        return []
+    rows = (
+        Prediction.objects.select_related(
+            "fixture",
+            "fixture__home_team",
+            "fixture__away_team",
+            "fixture__competition_ref",
+        )
+        .filter(
+            id__in=prediction_ids,
+            model_version=V8_MODEL_VERSION,
+            fixture__kickoff__gte=timezone.now(),
+            market_odds__isnull=True,
+        )
+        .order_by("-score", "-probability", "fixture__kickoff")
+    )
+    return list(rows[:limit])
+
+
 def health(request):
     return JsonResponse({"status": "ok", "service": "football-value-engine", "version": "1.0.0"})
 
@@ -76,6 +112,8 @@ def dashboard_home(request):
 def developer_dashboard(request):
     service = DashboardService()
     context = service.build_developer()
+    # Never present already-disqualified rows as "missing information".
+    context["pending_odds"] = _validated_pending_odds(limit=20)
     context["model_diagnostics"] = ModelDiagnosticsService().build()
     context["deep_premium"] = service.premium_picks(limit=3)
     return render(request, "dashboard/developer.html", context)
