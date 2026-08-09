@@ -21,7 +21,7 @@ DEEP_HISTORY_WORKERS = 6
 
 
 class Command(BaseCommand):
-    help = "Sprint 7.0: hydrate and deeply validate the strongest future fixtures using venue-specific last-10 history."
+    help = "Hydrate and deeply validate Premium Value candidates using venue-specific last-10 history."
 
     def add_arguments(self, parser):
         parser.add_argument("--date", dest="target_date", required=True, help="YYYY-MM-DD")
@@ -34,7 +34,13 @@ class Command(BaseCommand):
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
         limit = max(1, min(int(options["limit"]), DEEP_FIXTURE_LIMIT))
-        pool = high_recall_candidate_pool(target_date, rule=CandidatePoolRule(limit=limit))
+        # Expensive Deep Analysis is reserved for actual Premium Value markets.
+        # Markets below 1.60 (Premium Safe), above 2.40 or without usable EV do
+        # not consume one of the limited Deep slots.
+        pool = high_recall_candidate_pool(
+            target_date,
+            rule=CandidatePoolRule(limit=limit, require_premium_value_odds=True),
+        )
         fixture_ids = [entry.fixture_id for entry in pool]
         fixtures = list(
             Fixture.objects.filter(id__in=fixture_ids)
@@ -43,7 +49,7 @@ class Command(BaseCommand):
         order = {fixture_id: index for index, fixture_id in enumerate(fixture_ids)}
         fixtures.sort(key=lambda item: order.get(item.id, 999))
         if not fixtures:
-            self.stdout.write("[deep] no candidates")
+            self.stdout.write("[deep] no Premium Value candidates")
             return
 
         needs: dict[int, tuple[object, datetime, set[str]]] = {}
