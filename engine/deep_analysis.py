@@ -44,6 +44,23 @@ class DeepMatchAnalysisService:
     def _decimal(value: float) -> Decimal:
         return Decimal(str(max(0.0, min(value, 100.0)))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+    @staticmethod
+    def _base_score(prediction: Prediction) -> float:
+        """Return the immutable pre-deep V8 score.
+
+        Refresh runs may execute Deep Analysis repeatedly. Reusing prediction.score
+        would compound the deep adjustment on every click, so the first V8 score is
+        preserved and reused as the only base for all subsequent deep evaluations.
+        """
+        reasons = prediction.reasons or {}
+        stored = reasons.get("score_before_deep_analysis")
+        if stored is not None:
+            try:
+                return float(stored)
+            except (TypeError, ValueError):
+                pass
+        return float(prediction.score or 0.0)
+
     def _venue_fixtures(self, team: Team, venue: str, before_fixture: Fixture) -> list[Fixture]:
         qs = (
             Fixture.objects.filter(kickoff__lt=before_fixture.kickoff)
@@ -110,7 +127,7 @@ class DeepMatchAnalysisService:
         home: DeepVenueProfile,
         away: DeepVenueProfile,
     ) -> dict[str, Any]:
-        base_score = float(prediction.score or 0.0)
+        base_score = self._base_score(prediction)
         value_component = self._value_component(prediction)
         sample_coverage = min(home.sample_size / self.sample_size, 1.0) * 0.5 + min(away.sample_size / self.sample_size, 1.0) * 0.5
         failures: list[str] = []
@@ -163,7 +180,6 @@ class DeepMatchAnalysisService:
             + 0.15 * value_component
             + 0.10 * context_component
         )
-        # Sparse deep history does not hard-reject, but it cannot earn full trust.
         coverage_penalty = max(0.0, (0.70 - sample_coverage) * 12.0)
         warning_penalty = min(12.0, len(warnings) * 3.0)
         deep_score = max(0.0, min(100.0, deep_score - coverage_penalty - warning_penalty))
@@ -198,6 +214,28 @@ class DeepMatchAnalysisService:
             "failures": failures,
             "warnings": warnings,
             "evidence": evidence,
+            "base_score": round(base_score, 2),
+        }
+
+    @staticmethod
+    def _canonical_state(evaluation: dict[str, Any], *, preferred: bool) -> dict[str, Any]:
+        evidence = evaluation["evidence"]
+        return {
+            "version": DEEP_ANALYSIS_VERSION,
+            "status": "complete",
+            "passed": bool(evaluation["passed"]),
+            "preferred_market": bool(preferred),
+            "score": float(evaluation["score"]),
+            "v8_score": float(evaluation["base_score"]),
+            "warnings": list(evaluation["warnings"]),
+            "failures": list(evaluation["failures"]),
+            "home_n": int(evidence.get("home_sample") or 0),
+            "away_n": int(evidence.get("away_sample") or 0),
+            "home_over25": evidence.get("home_over25_rate"),
+            "away_over25": evidence.get("away_over25_rate"),
+            "home_btts": evidence.get("home_btts_rate"),
+            "away_btts": evidence.get("away_btts_rate"),
+            "evidence": evidence,
         }
 
     def analyze_fixture(self, fixture: Fixture) -> list[Prediction]:
@@ -230,16 +268,30 @@ class DeepMatchAnalysisService:
         updated: list[Prediction] = []
         for prediction, evaluation in evaluations:
             reasons = dict(prediction.reasons or {})
+            original_v8_score = self._base_score(prediction)
+            preferred = prediction.id == preferred_id
+            deep_state = self._canonical_state(evaluation, preferred=preferred)
             reasons.update({
+                "deep_analysis": deep_state,
                 "deep_analysis_version": DEEP_ANALYSIS_VERSION,
+                "deep_analysis_status": "complete",
                 "deep_analysis_passed": bool(evaluation["passed"]),
                 "deep_analysis_failures": evaluation["failures"],
                 "deep_analysis_warnings": evaluation["warnings"],
                 "deep_analysis_evidence": evaluation["evidence"],
-                "score_before_deep_analysis": float(prediction.score),
+                "score_before_deep_analysis": original_v8_score,
                 "deep_score": evaluation["score"],
-                "deep_preferred_market": prediction.id == preferred_id,
+                "deep_preferred_market": preferred,
+                # Explicit persisted fields requested by Sprint 7.0 closure.
+                "deep_home_n": deep_state["home_n"],
+                "deep_away_n": deep_state["away_n"],
+                "deep_home_over25": deep_state["home_over25"],
+                "deep_away_over25": deep_state["away_over25"],
+                "deep_home_btts": deep_state["home_btts"],
+                "deep_away_btts": deep_state["away_btts"],
+                "deep_warnings": deep_state["warnings"],
             })
+            # Prediction.score is the single final score used by Premium, Audit and Debug.
             prediction.score = self._decimal(evaluation["score"])
             prediction.reasons = reasons
             prediction.save(update_fields=["score", "reasons"])
