@@ -33,6 +33,9 @@ class ScoreEngineV8Tests(TestCase):
             btts_rate=0.8,
             clean_sheet_rate=0.1,
             failed_to_score_rate=0.1,
+            btts_over25_escalation_rate=0.8,
+            low_score_rate=0.2,
+            one_one_rate=0.1,
         )
 
     def _features(self, *, sample_size=5, quality=100.0, home_lineup=0.9, away_lineup=0.9):
@@ -63,13 +66,23 @@ class ScoreEngineV8Tests(TestCase):
             data_quality_score=quality,
         )
 
-    def test_insufficient_sample_blocks_premium(self):
-        result = self.engine.evaluate(self.fixture, self._features(sample_size=2, quality=100.0))
+    def test_small_sample_is_penalized_not_blocked(self):
+        result = self.engine.evaluate(self.fixture, self._features(sample_size=2, quality=55.0))
+        for evaluation in result.values():
+            reasons = evaluation["reasons"]
+            self.assertNotIn("no_home_venue_history", reasons["v8_gate_failures"])
+            self.assertNotIn("no_away_venue_history", reasons["v8_gate_failures"])
+            self.assertGreater(reasons["evidence_penalty"], 0)
+            self.assertIn("home_venue_sample_soft_penalty", reasons["v8_soft_warnings"])
+            self.assertIn("away_venue_sample_soft_penalty", reasons["v8_soft_warnings"])
+
+    def test_zero_venue_history_remains_hard_block(self):
+        result = self.engine.evaluate(self.fixture, self._features(sample_size=0, quality=20.0))
         for evaluation in result.values():
             self.assertEqual(evaluation["tier"], "")
             self.assertFalse(evaluation["reasons"]["v8_gates_passed"])
-            self.assertIn("insufficient_home_venue_sample", evaluation["reasons"]["v8_gate_failures"])
-            self.assertIn("insufficient_away_venue_sample", evaluation["reasons"]["v8_gate_failures"])
+            self.assertIn("no_home_venue_history", evaluation["reasons"]["v8_gate_failures"])
+            self.assertIn("no_away_venue_history", evaluation["reasons"]["v8_gate_failures"])
 
     def test_heavy_rotation_reduces_attack_factor(self):
         features = self._features(home_lineup=0.45, away_lineup=0.90)
