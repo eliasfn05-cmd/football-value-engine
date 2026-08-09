@@ -31,7 +31,32 @@
     {% endif %}
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">SPRINT 6.7</p><h2>Embudo del modelo</h2></div><span class="count-badge">{{ model_diagnostics.target_date|date:"d/m/Y" }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">SPRINT 7.0</p><h2>Deep Match Analysis · Premium actuales</h2></div><span class="count-badge">{{ deep_premium|length }}</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Partido</th><th>Mercado elegido</th><th>Deep Score</th><th>Home N</th><th>Home O2.5</th><th>Away N</th><th>Away O2.5</th><th>Home BTTS</th><th>Away BTTS</th><th>Advertencias</th></tr></thead>
+          <tbody>
+            {% for row in deep_premium %}
+            <tr>
+              <td><strong>{{ row.prediction.fixture.home_team.name }}</strong> vs {{ row.prediction.fixture.away_team.name }}</td>
+              <td><span class="market-pill">{{ row.prediction.market }}</span></td>
+              <td><strong>{% if row.prediction.reasons.deep_score != None %}{{ row.prediction.reasons.deep_score|floatformat:1 }}{% else %}—{% endif %}</strong></td>
+              <td>{{ row.prediction.reasons.deep_analysis_evidence.home_sample|default:"—" }}</td>
+              <td>{% if row.prediction.reasons.deep_analysis_evidence.home_over25_rate != None %}{{ row.prediction.reasons.deep_analysis_evidence.home_over25_rate|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td>{{ row.prediction.reasons.deep_analysis_evidence.away_sample|default:"—" }}</td>
+              <td>{% if row.prediction.reasons.deep_analysis_evidence.away_over25_rate != None %}{{ row.prediction.reasons.deep_analysis_evidence.away_over25_rate|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td>{% if row.prediction.reasons.deep_analysis_evidence.home_btts_rate != None %}{{ row.prediction.reasons.deep_analysis_evidence.home_btts_rate|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td>{% if row.prediction.reasons.deep_analysis_evidence.away_btts_rate != None %}{{ row.prediction.reasons.deep_analysis_evidence.away_btts_rate|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td>{% if row.prediction.reasons.deep_analysis_warnings %}{{ row.prediction.reasons.deep_analysis_warnings|join:", " }}{% else %}Sin alertas profundas{% endif %}</td>
+            </tr>
+            {% empty %}<tr><td colspan="10" class="empty">Ejecuta nuevamente Generar Picks Premium para producir evidencia Sprint 7.0.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><div><p class="eyebrow">SPRINT 6.7–7.0</p><h2>Embudo del modelo</h2></div><span class="count-badge">{{ model_diagnostics.target_date|date:"d/m/Y" }}</span></div>
       <div class="metrics-grid developer-metrics">
         {% for row in model_diagnostics.funnel %}
         <article class="metric-card"><span>{{ row.label }}</span><strong>{{ row.count }}</strong><small>etapa del filtro Premium</small></article>
