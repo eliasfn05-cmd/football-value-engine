@@ -14,13 +14,17 @@ from .quantitative import MarketQuote, MatchContext, TeamProfile
 
 
 V8_MODEL_VERSION = "v8.0-sprint4-score"
-MARKET_INTELLIGENCE_VERSION = "sprint6.6"
+MARKET_INTELLIGENCE_VERSION = "sprint6.7"
+ADAPTIVE_CONFIDENCE_VERSION = "sprint6.8"
 
 
 @dataclass(frozen=True)
 class V8RuleConfig:
-    min_data_quality: float = 60.0
-    min_venue_sample: int = 3
+    # Sprint 6.8: data completeness is a confidence penalty, not a binary gate.
+    hard_min_venue_sample: int = 1
+    data_quality_neutral: float = 75.0
+    data_quality_penalty_factor: float = 0.16
+    sample_penalty_max: float = 10.0
     lineup_rotation_threshold: float = 0.55
     lineup_rotation_attack_factor: float = 0.90
     lineup_mild_rotation_threshold: float = 0.73
@@ -32,12 +36,11 @@ class V8RuleConfig:
 
 
 class ScoreEngineV8:
-    """V8 scoring layer built on reproducible persisted features.
+    """V8 scoring layer with adaptive evidence confidence.
 
-    V7's Poisson/value engine remains the quantitative core. V8 adds explicit
-    data-quality/sample-size gates, lineup adjustments, Sprint 6.4 market
-    confidence and Sprint 6.6 market-selection intelligence. Every decision is
-    written to `reasons` so backtesting can isolate each rule.
+    Missing all venue history is still a hard stop. Partial venue history and
+    incomplete auxiliary data now lower the score progressively instead of
+    deleting otherwise valuable candidates before Premium ranking.
     """
 
     def __init__(self, config: V8RuleConfig | None = None):
@@ -62,6 +65,42 @@ class ScoreEngineV8:
         if continuity < self.config.lineup_mild_rotation_threshold:
             return self.config.lineup_mild_attack_factor, "mild_rotation"
         return 1.0, "stable_lineup"
+
+    @staticmethod
+    def _sample_confidence(sample_size: int) -> float:
+        # Venue features currently use at most five observations.
+        mapping = {0: 0.0, 1: 0.55, 2: 0.68, 3: 0.80, 4: 0.90}
+        return mapping.get(int(sample_size), 1.0)
+
+    def _evidence_adjustment(self, features: FeatureVector) -> tuple[float, dict[str, Any], list[str]]:
+        home_conf = self._sample_confidence(features.home_profile.sample_size)
+        away_conf = self._sample_confidence(features.away_profile.sample_size)
+        venue_conf = min(home_conf, away_conf)
+
+        quality_shortfall = max(0.0, self.config.data_quality_neutral - float(features.data_quality_score))
+        quality_penalty = round(quality_shortfall * self.config.data_quality_penalty_factor, 1)
+        sample_penalty = round((1.0 - venue_conf) * self.config.sample_penalty_max, 1)
+        total_penalty = round(quality_penalty + sample_penalty, 1)
+
+        warnings: list[str] = []
+        if features.data_quality_score < 60:
+            warnings.append("data_quality_soft_penalty")
+        if features.home_profile.sample_size < 3:
+            warnings.append("home_venue_sample_soft_penalty")
+        if features.away_profile.sample_size < 3:
+            warnings.append("away_venue_sample_soft_penalty")
+
+        evidence = {
+            "adaptive_confidence_version": ADAPTIVE_CONFIDENCE_VERSION,
+            "home_sample_confidence": round(home_conf, 3),
+            "away_sample_confidence": round(away_conf, 3),
+            "venue_sample_confidence": round(venue_conf, 3),
+            "data_quality_penalty": quality_penalty,
+            "sample_size_penalty": sample_penalty,
+            "evidence_penalty": total_penalty,
+            "evidence_warnings": warnings,
+        }
+        return total_penalty, evidence, warnings
 
     def _context_from_features(self, fixture: Fixture, features: FeatureVector) -> tuple[MatchContext, dict[str, Any]]:
         home = features.home_profile
@@ -116,14 +155,12 @@ class ScoreEngineV8:
         }
         return context, audit
 
-    def _gates(self, features: FeatureVector) -> tuple[bool, list[str]]:
+    def _hard_gates(self, features: FeatureVector) -> tuple[bool, list[str]]:
         failures: list[str] = []
-        if features.data_quality_score < self.config.min_data_quality:
-            failures.append("insufficient_data_quality")
-        if features.home_profile.sample_size < self.config.min_venue_sample:
-            failures.append("insufficient_home_venue_sample")
-        if features.away_profile.sample_size < self.config.min_venue_sample:
-            failures.append("insufficient_away_venue_sample")
+        if features.home_profile.sample_size < self.config.hard_min_venue_sample:
+            failures.append("no_home_venue_history")
+        if features.away_profile.sample_size < self.config.hard_min_venue_sample:
+            failures.append("no_away_venue_history")
         return not failures, failures
 
     @staticmethod
@@ -148,7 +185,8 @@ class ScoreEngineV8:
         )
 
         core_result = self.core.evaluate(context, btts_quote=btts_quote, over25_quote=over_quote)
-        base_gates_passed, base_gate_failures = self._gates(features)
+        hard_gates_passed, hard_gate_failures = self._hard_gates(features)
+        evidence_penalty, evidence_audit, evidence_warnings = self._evidence_adjustment(features)
 
         result: dict[str, Any] = {}
         for key, evaluation in core_result.items():
@@ -161,24 +199,27 @@ class ScoreEngineV8:
             )
 
             intelligence = self.market_intelligence.evaluate(features, evaluation.market)
-            adjusted_score, intelligence_penalty = self._adjust_score(
+            score_after_intelligence, intelligence_penalty = self._adjust_score(
                 score_after_confidence,
                 intelligence.score,
                 self.config.market_intelligence_neutral,
                 self.config.market_intelligence_penalty_factor,
             )
+            adjusted_score = round(max(0.0, score_after_intelligence - evidence_penalty), 1)
 
-            gate_failures = list(base_gate_failures)
+            gate_failures = list(hard_gate_failures)
             if not market_check.passed:
                 gate_failures.extend(market_check.failures)
             if not intelligence.passed:
                 gate_failures.extend(intelligence.failures)
-            gates_passed = base_gates_passed and market_check.passed and intelligence.passed
+            gates_passed = hard_gates_passed and market_check.passed and intelligence.passed
 
             reasons = dict(evaluation.reasons)
             reasons.update(audit)
+            reasons.update(evidence_audit)
             reasons["v8_gates_passed"] = gates_passed
             reasons["v8_gate_failures"] = gate_failures
+            reasons["v8_soft_warnings"] = evidence_warnings
             reasons["core_tier_before_v8_gates"] = evaluation.tier
             reasons["core_score_before_market_confidence"] = evaluation.score
             reasons["market_confidence_score"] = market_check.score
@@ -193,6 +234,7 @@ class ScoreEngineV8:
             reasons["market_intelligence_failures"] = intelligence.failures
             reasons["market_intelligence_evidence"] = intelligence.evidence
             reasons["market_intelligence_penalty"] = intelligence_penalty
+            reasons["score_after_market_intelligence"] = score_after_intelligence
             reasons["model_version"] = V8_MODEL_VERSION
 
             tier = evaluation.tier if gates_passed else ""
