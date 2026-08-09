@@ -34,18 +34,19 @@ class TierRule:
     min_reliability: float
 
 
-# Sprint 7.3: probability/EV used by Premium are calibrated, not raw.
-# EV thresholds apply to reliable_ev, so weak evidence cannot manufacture value.
 TIER_RULES = (
     TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.63, 0.65, TIER_A_MIN_RELIABILITY),
     TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.59, 0.61, PREMIUM_MIN_RELIABILITY),
 )
 
+# Score relaxation is only a ranking/completeness mechanism for Tier B. It never
+# relaxes odds, Deep Analysis, calibrated probability, calibrated edge, reliable
+# EV or reliability hard gates.
 DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0)
 
 
 class DailyPremiumSelector:
-    """Select at most one Deep-validated, probability-calibrated Premium Value market per fixture."""
+    """Select up to three Deep-validated, probability-calibrated Premium Value markets."""
 
     calibrator = ProbabilityEVCalibrationService()
 
@@ -94,10 +95,7 @@ class DailyPremiumSelector:
         else:
             return False
 
-        return (
-            calibration.calibrated_edge >= 0.05
-            and calibration.reliable_ev >= float(PREMIUM_MIN_EV)
-        )
+        return calibration.calibrated_edge >= 0.05 and calibration.reliable_ev >= float(PREMIUM_MIN_EV)
 
     @classmethod
     def _tier_for(cls, prediction: Prediction, *, score_floor: float = 84.0) -> str | None:
@@ -133,7 +131,6 @@ class DailyPremiumSelector:
         edge_component = min(max(0.0, calibration.calibrated_edge) / 0.12, 1.0) * 100.0
         reliability_component = calibration.reliability_score
 
-        # Sprint 7.3: reliable EV dominates; raw probability/EV no longer rank directly.
         composite = (
             0.22 * score_component
             + 0.30 * ev_component
@@ -192,6 +189,10 @@ class DailyPremiumSelector:
         )
         return ranked
 
+    @staticmethod
+    def _unique_fixture_count(ranked) -> int:
+        return len({item[0].fixture_id for item in ranked})
+
     @transaction.atomic
     def select(self, target_date: date) -> list[DailyPremiumSelection]:
         start, end = self._bounds(target_date)
@@ -214,12 +215,18 @@ class DailyPremiumSelector:
             )
         )
 
+        # Previous behavior stopped as soon as *one* candidate existed at 84.
+        # That prevented legitimate Tier-B selections at the intended dynamic
+        # floor 82/80 from filling #2 and #3. We now keep relaxing only the score
+        # floor until the requested number of unique fixtures is available, while
+        # every hard value/reliability/Deep gate remains unchanged.
         ranked = []
         selected_floor = DYNAMIC_SCORE_FLOORS[-1]
         for score_floor in DYNAMIC_SCORE_FLOORS:
-            ranked = self._rank_candidates(candidates, score_floor)
+            current = self._rank_candidates(candidates, score_floor)
+            ranked = current
             selected_floor = score_floor
-            if ranked:
+            if self._unique_fixture_count(current) >= self.max_picks:
                 break
 
         chosen = []
