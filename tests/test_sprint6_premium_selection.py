@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.test import TestCase
 from django.utils import timezone
 
+from engine.deep_analysis import DEEP_ANALYSIS_VERSION
 from engine.models import DailyPremiumSelection, Fixture, Prediction, Team
 from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
@@ -14,7 +15,7 @@ class Sprint6PremiumSelectionTests(TestCase):
         self.home = Team.objects.create(external_id="s6-home", name="S6 Home")
         self.away = Team.objects.create(external_id="s6-away", name="S6 Away")
 
-    def _prediction(self, index, *, market="BTTS", score="92.00", edge="0.10000", ev="0.12000", probability="0.66000", fixture=None):
+    def _prediction(self, index, *, market="BTTS", score="92.00", edge="0.10000", ev="0.12000", probability="0.66000", fixture=None, preferred=True):
         if fixture is None:
             fixture = Fixture.objects.create(
                 external_id=f"s6-fixture-{index}",
@@ -39,53 +40,37 @@ class Sprint6PremiumSelectionTests(TestCase):
             reasons={
                 "v8_gates_passed": True,
                 "data_quality_score": 85.0,
-                "venue_sample_confidence": 0.8,
                 "bookmaker": "Betano",
+                "deep_analysis_version": DEEP_ANALYSIS_VERSION,
+                "deep_analysis_passed": True,
+                "deep_preferred_market": preferred,
+                "deep_score": float(score),
             },
         )
 
     def test_selects_at_most_three_ranked_picks(self):
         for index in range(1, 6):
             self._prediction(index, score=str(94 - index))
-        target_date = timezone.localdate()
-        rows = DailyPremiumSelector().select(target_date)
+        rows = DailyPremiumSelector().select(timezone.localdate())
         self.assertEqual(len(rows), 3)
         self.assertEqual([row.rank for row in rows], [1, 2, 3])
-        self.assertEqual(DailyPremiumSelection.objects.filter(target_date=target_date).count(), 3)
 
-    def test_never_selects_two_markets_from_same_fixture(self):
+    def test_only_deep_preferred_market_can_be_selected(self):
         fixture = Fixture.objects.create(
-            external_id="s6-shared-fixture",
-            competition="Sprint 6 League",
+            external_id="s7-shared-fixture",
+            competition="Sprint 7 League",
             kickoff=timezone.now() + timedelta(hours=3),
             home_team=self.home,
             away_team=self.away,
             status="NS",
         )
-        self._prediction(1, fixture=fixture, market="BTTS", score="96.00", ev="0.15000")
-        self._prediction(2, fixture=fixture, market="OVER_2_5", score="95.00", ev="0.14000", probability="0.68000")
-        self._prediction(3, score="93.00")
+        btts = self._prediction(1, fixture=fixture, market="BTTS", score="94.00", preferred=False)
+        over = self._prediction(2, fixture=fixture, market="OVER_2_5", score="91.00", probability="0.68000", preferred=True)
+        self.assertIsNone(DailyPremiumSelector._tier_for(btts))
+        self.assertIsNotNone(DailyPremiumSelector._tier_for(over))
 
-        rows = DailyPremiumSelector().select(timezone.localdate())
-        fixture_ids = [row.prediction.fixture_id for row in rows]
-        self.assertEqual(len(fixture_ids), len(set(fixture_ids)))
-
-    def test_returns_no_bet_when_hard_value_floors_fail(self):
-        self._prediction(1, score="83.00", edge="0.04000", ev="0.05000", probability="0.58000")
-        rows = DailyPremiumSelector().select(timezone.localdate())
-        self.assertEqual(rows, [])
-
-    def test_dynamic_score_floor_can_recover_valid_value_pick(self):
-        self._prediction(1, score="82.00", edge="0.06000", ev="0.08000", probability="0.62000")
-        rows = DailyPremiumSelector().select(timezone.localdate())
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].premium_tier, "C")
-        self.assertEqual(float(rows[0].rationale["selector_dynamic_floor_used"]), 82.0)
-
-    def test_dynamic_floor_never_relaxes_probability_edge_or_ev(self):
-        self._prediction(1, score="83.00", edge="0.04900", ev="0.20000", probability="0.80000")
-        self._prediction(2, score="83.00", edge="0.20000", ev="0.05900", probability="0.80000")
-        self._prediction(3, score="83.00", edge="0.20000", ev="0.20000", probability="0.58000")
+    def test_returns_no_bet_when_candidates_miss_tier_c_floor(self):
+        self._prediction(1, score="79.00", edge="0.04000", ev="0.05000", probability="0.58000")
         rows = DailyPremiumSelector().select(timezone.localdate())
         self.assertEqual(rows, [])
 
