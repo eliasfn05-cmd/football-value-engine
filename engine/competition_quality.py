@@ -31,10 +31,6 @@ TIER1_TERMS = (
     "copa america", "euro championship", "uefa european championship",
 )
 
-# High-confidence senior official competition labels. These are evaluated from
-# the actual competition names before weaker/stale type metadata. This prevents
-# an official league fixture from being excluded because an upstream provider
-# accidentally carries a stale `competition_type=Friendly` value.
 OFFICIAL_SENIOR_TERMS = (
     "liga de primera", "primera division", "primera division chile", "liga chilena",
     "division de honor", "division profesional", "liga profesional",
@@ -44,9 +40,6 @@ OFFICIAL_SENIOR_TERMS = (
     "superettan", "j1 league", "k league 1", "a league", "pro league",
 )
 
-# Sprint 7.4 quality gate: these competitions/teams are not allowed to consume
-# model, odds or Deep Analysis capacity. The system is intentionally focused on
-# professional senior men's football with stronger liquidity/data quality.
 DEVELOPMENT_TERMS = (
     "u17", "u18", "u19", "u20", "u21", "u22", "u23",
     "under 17", "under 18", "under 19", "under 20", "under 21", "under 22", "under 23",
@@ -80,6 +73,26 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term and term in text for term in normalized_terms)
 
 
+def _looks_like_reserve_team(name: str | None) -> bool:
+    """Detect common second-team/reserve suffixes without flagging normal club names.
+
+    Examples intentionally excluded: Zamora FC B, Puerto Cabello II, New England II,
+    Austin II, Sporting KC II, Barcelona B, Bayern Munich II.
+    """
+    normalized = _normalize(name)
+    if not normalized:
+        return False
+    tokens = normalized.split()
+    if not tokens:
+        return False
+    last = tokens[-1]
+    if last in {"ii", "2", "b", "res", "reserve", "reserves"}:
+        return True
+    if re.search(r"\b(second team|segunda plantilla|equipo b|team b)\b", normalized):
+        return True
+    return False
+
+
 def classify_competition(fixture: Fixture) -> CompetitionQuality:
     competition = fixture.competition_ref
     fixture_name = fixture.competition or ""
@@ -91,9 +104,12 @@ def classify_competition(fixture: Fixture) -> CompetitionQuality:
     home_name = getattr(getattr(fixture, "home_team", None), "name", "") or ""
     away_name = getattr(getattr(fixture, "away_team", None), "name", "") or ""
 
-    # Strong identity fields are intentionally separated from weak provider
-    # metadata. Names of the league and teams are more trustworthy than a
-    # generic/stale competition type for deciding whether a fixture is official.
+    # Team identity is a hard exclusion. This is evaluated before an official
+    # league-name override so a B/II reserve side can never become Premium merely
+    # because it participates in a competition carrying an official-looking name.
+    if _looks_like_reserve_team(home_name) or _looks_like_reserve_team(away_name):
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "reserve_or_second_team")
+
     identity_text = _normalize(f"{fixture_name} {ref_name} {home_name} {away_name}")
     full_text = _normalize(
         f"{fixture_name} {ref_name} {competition_type} {country} {round_name} {external_id} {home_name} {away_name}"
@@ -107,9 +123,6 @@ def classify_competition(fixture: Fixture) -> CompetitionQuality:
     )
     official_senior_identity = _contains_any(identity_text, OFFICIAL_SENIOR_TERMS) and not identity_has_exclusion
 
-    # Official senior competition naming wins over contradictory weak metadata.
-    # This directly protects fixtures such as O'Higgins vs Deportes Limache in
-    # Chile's Liga de Primera / Primera Division from a false friendly label.
     if official_senior_identity:
         if _contains_any(identity_text, TIER1_TERMS):
             return CompetitionQuality(1, "TIER_1_ELITE", 100.0, False, "elite_official_competition")
