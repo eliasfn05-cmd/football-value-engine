@@ -31,6 +31,19 @@ TIER1_TERMS = (
     "copa america", "euro championship", "uefa european championship",
 )
 
+# High-confidence senior official competition labels. These are evaluated from
+# the actual competition names before weaker/stale type metadata. This prevents
+# an official league fixture from being excluded because an upstream provider
+# accidentally carries a stale `competition_type=Friendly` value.
+OFFICIAL_SENIOR_TERMS = (
+    "liga de primera", "primera division", "primera division chile", "liga chilena",
+    "division de honor", "division profesional", "liga profesional",
+    "premier division", "premiership", "super liga", "superliga",
+    "brasileirao serie a", "campeonato brasileiro serie a", "liga mx",
+    "major league soccer", "mls", "eredivisie", "eliteserien", "allsvenskan",
+    "superettan", "j1 league", "k league 1", "a league", "pro league",
+)
+
 # Sprint 7.4 quality gate: these competitions/teams are not allowed to consume
 # model, odds or Deep Analysis capacity. The system is intentionally focused on
 # professional senior men's football with stronger liquidity/data quality.
@@ -47,9 +60,6 @@ WOMEN_TERMS = (
     "frauen", "dames", "ladies", "w league", "nwsl", "liga f", "superliga femenina",
 )
 
-# Obvious lower-league labels. We deliberately avoid generic words such as
-# "division 2" alone because several countries use unconventional naming for
-# their top flight; the terms below are high-confidence lower-tier signals.
 LOWER_LEAGUE_TERMS = (
     "serie c", "serie c group", "serie c girone", "serie d",
     "league two", "liga 3", "liga iii", "third league", "3 liga", "3rd liga",
@@ -81,23 +91,43 @@ def classify_competition(fixture: Fixture) -> CompetitionQuality:
     home_name = getattr(getattr(fixture, "home_team", None), "name", "") or ""
     away_name = getattr(getattr(fixture, "away_team", None), "name", "") or ""
 
-    text = _normalize(
+    # Strong identity fields are intentionally separated from weak provider
+    # metadata. Names of the league and teams are more trustworthy than a
+    # generic/stale competition type for deciding whether a fixture is official.
+    identity_text = _normalize(f"{fixture_name} {ref_name} {home_name} {away_name}")
+    full_text = _normalize(
         f"{fixture_name} {ref_name} {competition_type} {country} {round_name} {external_id} {home_name} {away_name}"
     )
 
-    if _contains_any(text, FRIENDLY_TERMS) or _normalize(competition_type) in {"friendly", "friendlies", "exhibition"}:
+    identity_has_exclusion = (
+        _contains_any(identity_text, FRIENDLY_TERMS)
+        or _contains_any(identity_text, WOMEN_TERMS)
+        or _contains_any(identity_text, DEVELOPMENT_TERMS)
+        or _contains_any(identity_text, LOWER_LEAGUE_TERMS)
+    )
+    official_senior_identity = _contains_any(identity_text, OFFICIAL_SENIOR_TERMS) and not identity_has_exclusion
+
+    # Official senior competition naming wins over contradictory weak metadata.
+    # This directly protects fixtures such as O'Higgins vs Deportes Limache in
+    # Chile's Liga de Primera / Primera Division from a false friendly label.
+    if official_senior_identity:
+        if _contains_any(identity_text, TIER1_TERMS):
+            return CompetitionQuality(1, "TIER_1_ELITE", 100.0, False, "elite_official_competition")
+        return CompetitionQuality(2, "TIER_2_OFFICIAL", 90.0, False, "verified_senior_official_competition")
+
+    if _contains_any(full_text, FRIENDLY_TERMS) or _normalize(competition_type) in {"friendly", "friendlies", "exhibition"}:
         return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "friendly_or_exhibition")
 
-    if _contains_any(text, WOMEN_TERMS):
+    if _contains_any(full_text, WOMEN_TERMS):
         return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "women_competition")
 
-    if _contains_any(text, DEVELOPMENT_TERMS):
+    if _contains_any(full_text, DEVELOPMENT_TERMS):
         return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "youth_reserve_amateur_or_development")
 
-    if _contains_any(text, LOWER_LEAGUE_TERMS):
+    if _contains_any(full_text, LOWER_LEAGUE_TERMS):
         return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "lower_league_liquidity_filter")
 
-    if _contains_any(text, TIER1_TERMS):
+    if _contains_any(full_text, TIER1_TERMS):
         return CompetitionQuality(1, "TIER_1_ELITE", 100.0, False, "elite_official_competition")
 
     return CompetitionQuality(2, "TIER_2_OFFICIAL", 85.0, False, "official_standard_competition")
