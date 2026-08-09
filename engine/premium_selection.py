@@ -11,6 +11,11 @@ from .competition_quality import classify_competition
 from .deep_analysis import DEEP_ANALYSIS_VERSION
 from .models import DailyPremiumSelection, Prediction
 from .score_v8 import V8_MODEL_VERSION
+from .value_policy import (
+    PREMIUM_MIN_EV,
+    TIER_A_MIN_EV,
+    is_premium_value_odds,
+)
 
 
 @dataclass(frozen=True)
@@ -23,17 +28,18 @@ class TierRule:
     min_over25_probability: float
 
 
+# Premium operativo queda deliberadamente limitado a Tier A / Tier B.
+# A exige EV >= 8%; B admite EV >= 3% siempre que el resto del perfil sea sólido.
 TIER_RULES = (
-    TierRule("A", 92.0, 0.09, 0.10, 0.63, 0.65),
-    TierRule("B", 88.0, 0.07, 0.08, 0.61, 0.63),
-    TierRule("C", 84.0, 0.05, 0.06, 0.59, 0.61),
+    TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.63, 0.65),
+    TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.59, 0.61),
 )
 
 DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0)
 
 
 class DailyPremiumSelector:
-    """Select at most one Sprint 7.0 validated market per fixture and three picks per day."""
+    """Select at most one Deep-validated Premium Value market per fixture and three picks per day."""
 
     def __init__(self, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
         self.model_version = model_version
@@ -55,8 +61,6 @@ class DailyPremiumSelector:
         reasons = prediction.reasons or {}
         if not reasons.get("v8_gates_passed", False):
             return False
-        # Sprint 7.0: only the deeply validated winner of BTTS vs Over for a
-        # fixture can reach the daily ranking.
         if reasons.get("deep_analysis_version") != DEEP_ANALYSIS_VERSION:
             return False
         if reasons.get("deep_analysis_passed") is not True:
@@ -64,6 +68,9 @@ class DailyPremiumSelector:
         if reasons.get("deep_preferred_market") is not True:
             return False
         if prediction.market_odds is None or prediction.edge is None or prediction.expected_value is None:
+            return False
+        # Hard gate: low odds can never displace a real Premium Value candidate.
+        if not is_premium_value_odds(prediction.market_odds):
             return False
         probability = float(prediction.probability)
         if prediction.market == "BTTS":
@@ -74,7 +81,7 @@ class DailyPremiumSelector:
                 return False
         else:
             return False
-        return float(prediction.edge) >= 0.05 and float(prediction.expected_value) >= 0.06
+        return float(prediction.edge) >= 0.05 and float(prediction.expected_value) >= float(PREMIUM_MIN_EV)
 
     @classmethod
     def _tier_for(cls, prediction: Prediction, *, score_floor: float = 84.0) -> str | None:
@@ -86,7 +93,7 @@ class DailyPremiumSelector:
         ev = float(prediction.expected_value)
         for rule in TIER_RULES:
             effective_score = rule.min_score
-            if rule.name == "C":
+            if rule.name == "B":
                 effective_score = min(effective_score, score_floor)
             if (
                 score >= effective_score
@@ -105,9 +112,11 @@ class DailyPremiumSelector:
         edge = max(0.0, float(prediction.edge or 0))
         ev_component = min(ev / 0.25, 1.0) * 100.0
         edge_component = min(edge / 0.15, 1.0) * 100.0
+        # EV is now the dominant ranking component. A high probability at 1.40
+        # cannot enter this function because the hard odds gate runs first.
         composite = (
-            0.30 * score_component
-            + 0.30 * ev_component
+            0.25 * score_component
+            + 0.35 * ev_component
             + 0.25 * edge_component
             + 0.15 * probability_component
         )
@@ -125,7 +134,8 @@ class DailyPremiumSelector:
             "market_odds": float(prediction.market_odds) if prediction.market_odds is not None else None,
             "edge": float(prediction.edge) if prediction.edge is not None else None,
             "expected_value": float(prediction.expected_value) if prediction.expected_value is not None else None,
-            "formula": "0.30*deep_score + 0.30*ev + 0.25*edge + 0.15*probability",
+            "odds_policy": "Premium Value 1.60-2.40",
+            "formula": "0.25*deep_score + 0.35*ev + 0.25*edge + 0.15*probability",
         }
         return round(composite, 2), rationale
 
@@ -142,7 +152,7 @@ class DailyPremiumSelector:
             rationale["dynamic_score_floor"] = score_floor
             ranked.append((prediction, tier, rank_score, rationale))
 
-        tier_priority = {"A": 3, "B": 2, "C": 1}
+        tier_priority = {"A": 2, "B": 1}
         ranked.sort(
             key=lambda item: (
                 tier_priority[item[1]],
@@ -169,9 +179,10 @@ class DailyPremiumSelector:
                 model_version=self.model_version,
                 fixture__kickoff__gte=future_start,
                 fixture__kickoff__lt=end,
-                market_odds__isnull=False,
+                market_odds__gte=Decimal("1.60"),
+                market_odds__lte=Decimal("2.40"),
                 edge__isnull=False,
-                expected_value__isnull=False,
+                expected_value__gte=PREMIUM_MIN_EV,
             )
         )
 
