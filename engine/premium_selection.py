@@ -34,16 +34,20 @@ class TierRule:
     min_reliability: float
 
 
-# Sprint 7.5: probability is no longer judged by a single rigid 59/61% cutoff.
-# A 57% event at 2.15 can be a stronger value bet than a 66% event at 1.45.
-# Final admission therefore combines a modest absolute probability floor with
-# calibrated edge versus the market, reliable EV, Deep validation and reliability.
+# Sprint 7.5.1: the absolute probability floor is a MODEL evidence floor and
+# therefore uses raw model probability. Market calibration is used for what it
+# is designed for: calibrated edge, EV and reliability. Using the already
+# market-shrunk probability again as an absolute floor was a double penalty.
 TIER_RULES = (
     TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.58, 0.60, TIER_A_MIN_RELIABILITY),
     TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.54, 0.56, PREMIUM_MIN_RELIABILITY),
 )
 
-DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0)
+# Tier B may relax only the composite score. All hard professional gates stay
+# fixed: official competition, odds 1.60-2.40, Deep pass/preferred market,
+# reliability, calibrated edge and reliable EV. This prevents redundant score
+# gating from rejecting an otherwise fully validated value position.
+DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0, 78.0, 76.0)
 
 
 class DailyPremiumSelector:
@@ -93,14 +97,13 @@ class DailyPremiumSelector:
         calibration = cls.calibrator.calibrate(prediction)
         if not calibration.premium_reliable:
             return False
-
-        # Professional market-calibrated gate: retain a minimum statistical base,
-        # but require the calibrated estimate to beat the market by at least 5pp.
-        # This removes the previous double restriction where a high-value 56-59%
-        # outcome was rejected solely because it missed an arbitrary absolute floor.
         if prediction.market not in {"BTTS", "OVER_2_5"}:
             return False
-        if calibration.calibrated_probability < cls._base_probability_floor(prediction.market):
+
+        # IMPORTANT: use raw model probability for statistical plausibility.
+        # The calibrated probability has already been shrunk toward market price;
+        # applying the same absolute floor to it double-counts the bookmaker.
+        if calibration.raw_probability < cls._base_probability_floor(prediction.market):
             return False
         if calibration.calibrated_edge < 0.05:
             return False
@@ -109,12 +112,48 @@ class DailyPremiumSelector:
         return True
 
     @classmethod
+    def rejection_reasons(cls, prediction: Prediction, *, score_floor: float = 76.0) -> list[str]:
+        reasons_out: list[str] = []
+        quality = classify_competition(prediction.fixture)
+        if quality.excluded:
+            reasons_out.append(f"competition:{quality.reason}")
+            return reasons_out
+        reasons = prediction.reasons or {}
+        if not reasons.get("v8_gates_passed", False):
+            reasons_out.append("v8_gates")
+        if reasons.get("deep_analysis_version") != DEEP_ANALYSIS_VERSION:
+            reasons_out.append("deep_missing")
+        elif reasons.get("deep_analysis_passed") is not True:
+            reasons_out.append("deep_rejected")
+        if reasons.get("deep_preferred_market") is not True:
+            reasons_out.append("not_deep_preferred")
+        if prediction.market_odds is None:
+            reasons_out.append("no_odds")
+            return reasons_out
+        if not is_premium_value_odds(prediction.market_odds):
+            reasons_out.append("odds_outside_1.60_2.40")
+        calibration = cls.calibrator.calibrate(prediction)
+        if calibration.reliability < PREMIUM_MIN_RELIABILITY:
+            reasons_out.append(f"reliability:{calibration.reliability:.3f}")
+        if calibration.raw_probability < cls._base_probability_floor(prediction.market):
+            reasons_out.append(f"raw_probability:{calibration.raw_probability:.3f}")
+        if calibration.calibrated_edge < 0.05:
+            reasons_out.append(f"calibrated_edge:{calibration.calibrated_edge:.3f}")
+        if calibration.reliable_ev < float(PREMIUM_MIN_EV):
+            reasons_out.append(f"reliable_ev:{calibration.reliable_ev:.3f}")
+        if float(prediction.score or 0.0) < score_floor:
+            reasons_out.append(f"score:{float(prediction.score or 0.0):.1f}")
+        return reasons_out
+
+    @classmethod
     def _tier_for(cls, prediction: Prediction, *, score_floor: float = 84.0) -> str | None:
         if not cls._passes_hard_value_floors(prediction):
             return None
 
         calibration = cls.calibrator.calibrate(prediction)
-        probability = calibration.calibrated_probability
+        # Raw probability is the model-side plausibility check. Calibrated edge,
+        # EV and reliability are the market-side value checks.
+        probability = calibration.raw_probability
         score = float(prediction.score)
         edge = calibration.calibrated_edge
         ev = calibration.reliable_ev
@@ -137,7 +176,7 @@ class DailyPremiumSelector:
     def _rank_score(cls, prediction: Prediction) -> tuple[float, dict]:
         calibration = cls.calibrator.calibrate(prediction)
         score_component = max(0.0, min(float(prediction.score), 100.0))
-        probability_component = calibration.calibrated_probability * 100.0
+        probability_component = calibration.raw_probability * 100.0
         ev_component = min(max(0.0, calibration.reliable_ev) / 0.20, 1.0) * 100.0
         edge_component = min(max(0.0, calibration.calibrated_edge) / 0.12, 1.0) * 100.0
         reliability_component = calibration.reliability_score
@@ -172,8 +211,8 @@ class DailyPremiumSelector:
             "reliable_expected_value": calibration.reliable_ev,
             "probability_reliability": calibration.reliability,
             "odds_policy": "Premium Value 1.60-2.40",
-            "value_gate": "Sprint 7.5 market-calibrated: absolute base + calibrated edge + reliable EV",
-            "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*calibrated_probability + 0.15*reliability",
+            "value_gate": "Sprint 7.5.1 raw probability + calibrated edge/EV + Deep + reliability",
+            "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*raw_probability + 0.15*reliability",
         }
         return round(composite, 2), rationale
 
