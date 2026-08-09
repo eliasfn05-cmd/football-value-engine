@@ -7,6 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
+from engine.competition_quality import classify_competition
 from engine.deep_analysis import DeepMatchAnalysisService
 from engine.models import Fixture
 from scanner.ingestion import DataIngestionService
@@ -33,10 +34,7 @@ class Command(BaseCommand):
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
         limit = max(1, min(int(options["limit"]), DEEP_FIXTURE_LIMIT))
-        pool = high_recall_candidate_pool(
-            target_date,
-            rule=CandidatePoolRule(limit=limit),
-        )
+        pool = high_recall_candidate_pool(target_date, rule=CandidatePoolRule(limit=limit))
         fixture_ids = [entry.fixture_id for entry in pool]
         fixtures = list(
             Fixture.objects.filter(id__in=fixture_ids)
@@ -64,9 +62,7 @@ class Command(BaseCommand):
                     venues.add(venue)
                     needs[team.id] = (old_team, min(old_before, fixture.kickoff), venues)
 
-        self.stdout.write(
-            f"[deep] fixtures={len(fixtures)} teams_needing_history={len(needs)} target={DEEP_HISTORY_TARGET}"
-        )
+        self.stdout.write(f"[deep] fixtures={len(fixtures)} teams_needing_history={len(needs)} target={DEEP_HISTORY_TARGET}")
         provider = APIFootballProvider()
         ingestion = DataIngestionService(provider, progress=lambda message: self.stdout.write(message))
         raw_by_external_id: dict[str, dict] = {}
@@ -86,9 +82,7 @@ class Command(BaseCommand):
                             external_id = str(((row.get("fixture") or {}).get("id")) or "")
                             if external_id:
                                 raw_by_external_id[external_id] = row
-                        self.stdout.write(
-                            f"[deep] history team={team.name} venues={','.join(sorted(venues))} accepted={len(rows)}"
-                        )
+                        self.stdout.write(f"[deep] history team={team.name} venues={','.join(sorted(venues))} accepted={len(rows)}")
                     except Exception as exc:
                         errors += 1
                         self.stderr.write(f"[deep] history error team={team.external_id}: {exc}")
@@ -110,11 +104,12 @@ class Command(BaseCommand):
             analyzed += len(rows)
             preferred += sum(1 for row in rows if (row.reasons or {}).get("deep_preferred_market"))
             if rows:
-                home_evidence = (rows[0].reasons or {}).get("deep_analysis_evidence") or {}
+                evidence = (rows[0].reasons or {}).get("deep_analysis_evidence") or {}
                 self.stdout.write(
                     f"[deep] {fixture.home_team.name} vs {fixture.away_team.name} "
-                    f"home_n={home_evidence.get('home_sample')} away_n={home_evidence.get('away_sample')} "
-                    f"home_over={home_evidence.get('home_over25_rate')} away_over={home_evidence.get('away_over25_rate')}"
+                    f"home_n={evidence.get('home_sample')} away_n={evidence.get('away_sample')} "
+                    f"home_over={evidence.get('home_over25_rate')} away_over={evidence.get('away_over25_rate')} "
+                    f"home_btts={evidence.get('home_btts_rate')} away_btts={evidence.get('away_btts_rate')}"
                 )
 
         self.stdout.write(
@@ -125,13 +120,24 @@ class Command(BaseCommand):
 
     @staticmethod
     def _venue_history_count(team, venue: str, fixture: Fixture) -> int:
-        qs = Fixture.objects.filter(
-            kickoff__lt=fixture.kickoff,
-            home_goals__isnull=False,
-            away_goals__isnull=False,
+        qs = (
+            Fixture.objects.filter(
+                kickoff__lt=fixture.kickoff,
+                home_goals__isnull=False,
+                away_goals__isnull=False,
+            )
+            .select_related("competition_ref")
+            .order_by("-kickoff")
         )
         qs = qs.filter(home_team=team) if venue == "home" else qs.filter(away_team=team)
-        return qs.count()
+        count = 0
+        for item in qs.iterator(chunk_size=100):
+            if classify_competition(item).excluded:
+                continue
+            count += 1
+            if count >= DEEP_HISTORY_TARGET:
+                break
+        return count
 
     @staticmethod
     def _fetch_history(team_external_id: str, before_kickoff: datetime) -> list[dict]:
