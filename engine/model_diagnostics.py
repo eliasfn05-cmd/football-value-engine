@@ -14,9 +14,11 @@ from .score_v8 import V8_MODEL_VERSION
 
 
 FAILURE_LABELS = {
-    "insufficient_data_quality": "Calidad de datos insuficiente",
-    "insufficient_home_venue_sample": "Poca muestra local",
-    "insufficient_away_venue_sample": "Poca muestra visitante",
+    "no_home_venue_history": "Sin historial local por condición",
+    "no_away_venue_history": "Sin historial visitante por condición",
+    "data_quality_soft_penalty": "Calidad de datos penalizada",
+    "home_venue_sample_soft_penalty": "Muestra local pequeña penalizada",
+    "away_venue_sample_soft_penalty": "Muestra visitante pequeña penalizada",
     "market_confidence_below_50": "Market Confidence insuficiente",
     "market_intelligence_below_40": "Market Intelligence insuficiente",
     "prefer_btts_over_over25": "BTTS tiene mejor encaje que Over 2.5",
@@ -33,11 +35,16 @@ FAILURE_LABELS = {
     "home_clean_sheet_high": "Local mantiene portería a cero con frecuencia",
     "h2h_btts_low": "H2H BTTS bajo",
     "competition_btts_low": "Competición con BTTS bajo",
+    "missing_market_odds": "Sin cuota de mercado",
+    "edge_below_premium_floor": "Edge por debajo de 5%",
+    "ev_below_premium_floor": "EV por debajo de 6%",
+    "probability_below_premium_floor": "Probabilidad por debajo del piso Premium",
+    "score_below_dynamic_floor": "Score por debajo del piso dinámico 80",
 }
 
 
 class ModelDiagnosticsService:
-    """Explain where future predictions are lost in the Premium funnel."""
+    """Explain the real sequential Premium funnel."""
 
     def __init__(self, model_version: str = V8_MODEL_VERSION):
         self.model_version = model_version
@@ -50,6 +57,15 @@ class ModelDiagnosticsService:
     @staticmethod
     def _failure_label(code: str) -> str:
         return FAILURE_LABELS.get(code, code.replace("_", " ").title())
+
+    @staticmethod
+    def _probability_ok(prediction: Prediction) -> bool:
+        p = float(prediction.probability)
+        if prediction.market == "BTTS":
+            return p >= 0.59
+        if prediction.market == "OVER_2_5":
+            return p >= 0.61
+        return False
 
     def build(self, target_date=None, *, top_rejected: int = 5) -> dict[str, Any]:
         target_date = target_date or timezone.localdate()
@@ -71,67 +87,90 @@ class ModelDiagnosticsService:
         )
 
         official = [p for p in predictions if not classify_competition(p.fixture).excluded]
-        pool = high_recall_candidate_pool(
+        official_ids = {p.id for p in official}
+        discovery_pool = high_recall_candidate_pool(
             target_date,
-            rule=CandidatePoolRule(limit=12),
+            rule=CandidatePoolRule(limit=60),
             model_version=self.model_version,
         )
-        pool_prediction_ids = {entry.prediction_id for entry in pool}
+        pool_prediction_ids = {entry.prediction_id for entry in discovery_pool}
+        pool_predictions = [p for p in official if p.id in pool_prediction_ids]
 
-        market_confidence_pass = []
+        # Sequential stages: every next count is a subset of the previous stage.
+        hard_data_pass = []
+        confidence_pass = []
         intelligence_pass = []
-        base_data_pass = []
+        value_pass = []
         premium_eligible = []
         rejection_counter: Counter[str] = Counter()
         rejected_rows: list[dict[str, Any]] = []
 
-        for prediction in official:
+        for prediction in pool_predictions:
             reasons = prediction.reasons or {}
             failures = list(reasons.get("v8_gate_failures") or [])
-            base_failures = [
+            hard_data_failures = [
                 item for item in failures
-                if item in {
-                    "insufficient_data_quality",
-                    "insufficient_home_venue_sample",
-                    "insufficient_away_venue_sample",
-                }
+                if item in {"no_home_venue_history", "no_away_venue_history"}
             ]
-            if not base_failures:
-                base_data_pass.append(prediction)
-            if reasons.get("market_confidence_passed") is True:
-                market_confidence_pass.append(prediction)
-            if reasons.get("market_intelligence_passed") is True:
-                intelligence_pass.append(prediction)
-            if DailyPremiumSelector._tier_for(prediction) is not None:
+            if hard_data_failures:
+                continue
+            hard_data_pass.append(prediction)
+
+            if reasons.get("market_confidence_passed") is not True:
+                continue
+            confidence_pass.append(prediction)
+
+            if reasons.get("market_intelligence_passed") is not True:
+                continue
+            intelligence_pass.append(prediction)
+
+            if not DailyPremiumSelector._passes_hard_value_floors(prediction):
+                continue
+            value_pass.append(prediction)
+
+            if DailyPremiumSelector._tier_for(prediction, score_floor=80.0) is not None:
                 premium_eligible.append(prediction)
 
-            if DailyPremiumSelector._tier_for(prediction) is None:
-                if failures:
-                    main = failures[0]
-                elif prediction.market_odds is None:
-                    main = "missing_market_odds"
-                elif prediction.edge is None or float(prediction.edge) < 0.05:
-                    main = "edge_below_premium_floor"
-                elif prediction.expected_value is None or float(prediction.expected_value) < 0.06:
-                    main = "ev_below_premium_floor"
-                elif float(prediction.score) < 84.0:
-                    main = "score_below_premium_floor"
-                else:
-                    main = "premium_threshold_combination"
-                rejection_counter[main] += 1
-                rejected_rows.append({
-                    "prediction": prediction,
-                    "reason_code": main,
-                    "reason": self._failure_label(main),
-                    "market_confidence": reasons.get("market_confidence_score"),
-                    "market_intelligence": reasons.get("market_intelligence_score"),
-                    "gei": (reasons.get("market_intelligence_evidence") or {}).get("goal_escalation_index"),
-                    "low_score_rate": (reasons.get("market_intelligence_evidence") or {}).get("combined_low_score_rate"),
-                    "in_high_recall_pool": prediction.id in pool_prediction_ids,
-                })
+        for prediction in official:
+            if DailyPremiumSelector._tier_for(prediction, score_floor=80.0) is not None:
+                continue
+            reasons = prediction.reasons or {}
+            failures = list(reasons.get("v8_gate_failures") or [])
+            soft_warnings = list(reasons.get("v8_soft_warnings") or [])
+            if failures:
+                main = failures[0]
+            elif prediction.market_odds is None:
+                main = "missing_market_odds"
+            elif not self._probability_ok(prediction):
+                main = "probability_below_premium_floor"
+            elif prediction.edge is None or float(prediction.edge) < 0.05:
+                main = "edge_below_premium_floor"
+            elif prediction.expected_value is None or float(prediction.expected_value) < 0.06:
+                main = "ev_below_premium_floor"
+            elif float(prediction.score) < 80.0:
+                main = "score_below_dynamic_floor"
+            else:
+                main = "premium_threshold_combination"
+            rejection_counter[main] += 1
+            for warning in soft_warnings:
+                rejection_counter[warning] += 1
+            rejected_rows.append({
+                "prediction": prediction,
+                "reason_code": main,
+                "reason": self._failure_label(main),
+                "soft_warnings": [self._failure_label(item) for item in soft_warnings],
+                "market_confidence": reasons.get("market_confidence_score"),
+                "market_intelligence": reasons.get("market_intelligence_score"),
+                "gei": (reasons.get("market_intelligence_evidence") or {}).get("goal_escalation_index"),
+                "low_score_rate": (reasons.get("market_intelligence_evidence") or {}).get("combined_low_score_rate"),
+                "sample_confidence": reasons.get("venue_sample_confidence"),
+                "evidence_penalty": reasons.get("evidence_penalty"),
+                "in_high_recall_pool": prediction.id in pool_prediction_ids,
+            })
 
         rejected_rows.sort(
             key=lambda row: (
+                row["in_high_recall_pool"],
                 float(row["prediction"].score or 0),
                 float(row["prediction"].expected_value or -1),
                 float(row["prediction"].edge or -1),
@@ -139,29 +178,24 @@ class ModelDiagnosticsService:
             reverse=True,
         )
 
-        unique_fixtures = len({p.fixture_id for p in predictions})
-        official_fixtures = len({p.fixture_id for p in official})
-        base_fixtures = len({p.fixture_id for p in base_data_pass})
-        confidence_fixtures = len({p.fixture_id for p in market_confidence_pass})
-        intelligence_fixtures = len({p.fixture_id for p in intelligence_pass})
-        premium_fixtures = len({p.fixture_id for p in premium_eligible})
-
         return {
             "target_date": target_date,
             "funnel": [
-                {"label": "Fixtures con predicción V8", "count": unique_fixtures},
-                {"label": "Competiciones oficiales", "count": official_fixtures},
-                {"label": "High Recall Pool", "count": len(pool)},
-                {"label": "Calidad/muestra suficiente", "count": base_fixtures},
-                {"label": "Market Confidence OK", "count": confidence_fixtures},
-                {"label": "Market Intelligence OK", "count": intelligence_fixtures},
-                {"label": "Elegibles Premium", "count": premium_fixtures},
+                {"label": "Fixtures con predicción V8", "count": len({p.fixture_id for p in predictions})},
+                {"label": "Competiciones oficiales", "count": len({p.fixture_id for p in official})},
+                {"label": "High Recall Discovery Pool", "count": len({p.fixture_id for p in pool_predictions})},
+                {"label": "Historial mínimo disponible", "count": len({p.fixture_id for p in hard_data_pass})},
+                {"label": "Market Confidence OK", "count": len({p.fixture_id for p in confidence_pass})},
+                {"label": "Market Intelligence OK", "count": len({p.fixture_id for p in intelligence_pass})},
+                {"label": "Valor mínimo EV/Edge/Prob.", "count": len({p.fixture_id for p in value_pass})},
+                {"label": "Elegibles Premium (piso dinámico)", "count": len({p.fixture_id for p in premium_eligible})},
             ],
             "rejection_summary": [
                 {"code": code, "reason": self._failure_label(code), "count": count}
-                for code, count in rejection_counter.most_common(10)
+                for code, count in rejection_counter.most_common(12)
             ],
             "top_rejected": rejected_rows[: max(1, int(top_rejected))],
-            "pool_count": len(pool),
+            "pool_count": len(discovery_pool),
             "prediction_count": len(predictions),
+            "official_prediction_count": len(official_ids),
         }
