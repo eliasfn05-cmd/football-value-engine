@@ -18,6 +18,11 @@ class VenueProfile:
     btts_rate: float
     clean_sheet_rate: float
     failed_to_score_rate: float
+    # Sprint 6.6 market-intelligence features. Defaults preserve compatibility
+    # with tests/callers that still construct the original seven-field profile.
+    btts_over25_escalation_rate: float = 0.50
+    low_score_rate: float = 0.50
+    one_one_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,7 @@ class FeatureEngineeringService:
         gf_values: list[int] = []
         ga_values: list[int] = []
         overs = btts = clean = fts = 0
+        btts_and_over = low_score = one_one = 0
         for item in fixtures:
             hg = int(item.home_goals or 0)
             ag = int(item.away_goals or 0)
@@ -87,14 +93,20 @@ class FeatureEngineeringService:
                 gf, ga = hg, ag
             else:
                 gf, ga = ag, hg
+            total = gf + ga
+            is_btts = gf > 0 and ga > 0
             gf_values.append(gf)
             ga_values.append(ga)
-            overs += int(gf + ga >= 3)
-            btts += int(gf > 0 and ga > 0)
+            overs += int(total >= 3)
+            btts += int(is_btts)
             clean += int(ga == 0)
             fts += int(gf == 0)
+            btts_and_over += int(is_btts and total >= 3)
+            low_score += int(total <= 2)
+            one_one += int(gf == 1 and ga == 1)
 
         n = len(fixtures)
+        escalation = (btts_and_over / btts) if btts else 0.50
         return VenueProfile(
             sample_size=n,
             goals_for=round(mean(gf_values), 3),
@@ -103,6 +115,9 @@ class FeatureEngineeringService:
             btts_rate=round(btts / n, 3),
             clean_sheet_rate=round(clean / n, 3),
             failed_to_score_rate=round(fts / n, 3),
+            btts_over25_escalation_rate=round(escalation, 3),
+            low_score_rate=round(low_score / n, 3),
+            one_one_rate=round(one_one / n, 3),
         )
 
     @staticmethod
