@@ -12,6 +12,15 @@ from engine.competition_quality import classify_competition
 from engine.deep_analysis import DEEP_ANALYSIS_VERSION
 from engine.models import DailyPremiumSelection, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
+from engine.value_policy import (
+    PREMIUM_MIN_EV,
+    PREMIUM_SAFE_MIN_ODDS,
+    PREMIUM_VALUE_MAX_ODDS,
+    PREMIUM_VALUE_MIN_ODDS,
+    is_premium_safe_odds,
+    is_premium_value_odds,
+    odds_band,
+)
 from scanner.models import PipelineRun
 
 
@@ -123,12 +132,56 @@ class DashboardService:
             prediction = row.prediction
             if classify_competition(prediction.fixture).excluded:
                 continue
+            if not is_premium_value_odds(prediction.market_odds):
+                continue
+            if prediction.expected_value is None or Decimal(str(prediction.expected_value)) < PREMIUM_MIN_EV:
+                continue
             deep = self._deep_state(prediction)
             if deep.get("status") != "complete":
                 continue
             if deep.get("passed") is not True or deep.get("preferred_market") is not True:
                 continue
             rows.append(row)
+            if len(rows) >= limit:
+                break
+        return rows
+
+    def premium_safe(self, *, limit: int = 8) -> list[Prediction]:
+        """Informational strong picks in 1.30-1.59; never part of the Premium Top 3."""
+        qs = (
+            Prediction.objects.select_related(
+                "fixture",
+                "fixture__home_team",
+                "fixture__away_team",
+                "fixture__competition_ref",
+            )
+            .filter(
+                model_version=self.model_version,
+                fixture__kickoff__gte=timezone.now(),
+                market_odds__gte=PREMIUM_SAFE_MIN_ODDS,
+                market_odds__lt=PREMIUM_VALUE_MIN_ODDS,
+                expected_value__gt=0,
+                score__gte=80,
+            )
+            .order_by("-score", "-expected_value", "fixture__kickoff")
+        )
+        rows: list[Prediction] = []
+        seen: set[int] = set()
+        for prediction in qs.iterator(chunk_size=100):
+            if prediction.fixture_id in seen or classify_competition(prediction.fixture).excluded:
+                continue
+            reasons = prediction.reasons or {}
+            if reasons.get("v8_gates_passed") is not True:
+                continue
+            probability = float(prediction.probability)
+            if prediction.market == "BTTS" and probability < 0.59:
+                continue
+            if prediction.market == "OVER_2_5" and probability < 0.61:
+                continue
+            if prediction.market not in {"BTTS", "OVER_2_5"}:
+                continue
+            rows.append(prediction)
+            seen.add(prediction.fixture_id)
             if len(rows) >= limit:
                 break
         return rows
@@ -184,6 +237,20 @@ class DashboardService:
     def _rejection_reason(cls, prediction: Prediction) -> str:
         if classify_competition(prediction.fixture).excluded:
             return "Partido amistoso/exhibición excluido"
+        if prediction.market_odds is None:
+            return "Pendiente de cuota"
+        band = odds_band(prediction.market_odds)
+        if band == "PREMIUM_SAFE":
+            return "Premium Safe: cuota < 1.60; no compite por Top 3"
+        if band == "OUTSIDE":
+            if Decimal(str(prediction.market_odds)) > PREMIUM_VALUE_MAX_ODDS:
+                return "Cuota > 2.40; fuera de Premium Value"
+            return "Cuota < 1.30; descartado"
+        if prediction.expected_value is None:
+            return "EV no disponible"
+        if Decimal(str(prediction.expected_value)) < PREMIUM_MIN_EV:
+            return "EV < 3%; margen insuficiente"
+
         reasons = prediction.reasons or {}
         deep = cls._deep_state(prediction)
         if deep.get("status") != "complete":
@@ -202,21 +269,18 @@ class DashboardService:
                 "insufficient_away_venue_sample": "Poca muestra visitante",
             }
             return ", ".join(labels.get(item, item) for item in failures)
-        if prediction.market_odds is None:
-            return "Sin cuota de mercado"
         if prediction.market == "BTTS" and float(prediction.probability) < 0.59:
             return "Probabilidad BTTS < 59%"
         if prediction.market == "OVER_2_5" and float(prediction.probability) < 0.61:
             return "Probabilidad Over 2.5 < 61%"
         if prediction.edge is None or float(prediction.edge) < 0.05:
             return "Edge < 5%"
-        if prediction.expected_value is None or float(prediction.expected_value) < 0.06:
-            return "EV < 6%"
         if float(prediction.score) < 80.0:
             return "Score final < piso dinámico"
         return "Fuera del Top 3 diario"
 
     def near_premium(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        # Only genuine Premium Value candidates belong in this table.
         qs = (
             Prediction.objects.select_related(
                 "fixture",
@@ -224,10 +288,51 @@ class DashboardService:
                 "fixture__away_team",
                 "fixture__competition_ref",
             )
-            .filter(model_version=self.model_version, fixture__kickoff__gte=timezone.now())
+            .filter(
+                model_version=self.model_version,
+                fixture__kickoff__gte=timezone.now(),
+                market_odds__gte=PREMIUM_VALUE_MIN_ODDS,
+                market_odds__lte=PREMIUM_VALUE_MAX_ODDS,
+                expected_value__gte=PREMIUM_MIN_EV,
+            )
             .order_by("-score", "-expected_value", "fixture__kickoff")[:limit]
         )
         return [{"prediction": pred, "reason": self._rejection_reason(pred), "deep": self._deep_state(pred)} for pred in qs]
+
+    def pending_odds(self, *, limit: int = 20) -> list[Prediction]:
+        return list(
+            Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team")
+            .filter(
+                model_version=self.model_version,
+                fixture__kickoff__gte=timezone.now(),
+                market_odds__isnull=True,
+            )
+            .order_by("-score", "fixture__kickoff")[:limit]
+        )
+
+    def pending_deep(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        qs = (
+            Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team", "fixture__competition_ref")
+            .filter(
+                model_version=self.model_version,
+                fixture__kickoff__gte=timezone.now(),
+                market_odds__gte=PREMIUM_VALUE_MIN_ODDS,
+                market_odds__lte=PREMIUM_VALUE_MAX_ODDS,
+                expected_value__gte=PREMIUM_MIN_EV,
+            )
+            .order_by("-score", "-expected_value")
+        )
+        rows: list[dict[str, Any]] = []
+        for prediction in qs.iterator(chunk_size=100):
+            if classify_competition(prediction.fixture).excluded:
+                continue
+            deep = self._deep_state(prediction)
+            if deep.get("status") == "complete":
+                continue
+            rows.append({"prediction": prediction, "deep": deep})
+            if len(rows) >= limit:
+                break
+        return rows
 
     def rejection_summary(self) -> list[dict[str, Any]]:
         rows = self.near_premium(limit=200)
@@ -309,6 +414,7 @@ class DashboardService:
             "model_version": self.model_version,
             "metrics": self.metrics().to_dict(),
             "premium_picks": picks,
+            "premium_safe": self.premium_safe(),
             "operational": self.operational_summary(picks),
             "recent_results": self.recent_results(),
             "market_performance": self.market_performance(),
@@ -322,6 +428,9 @@ class DashboardService:
         return {
             "model_version": self.model_version,
             "near_premium": self.near_premium(),
+            "premium_safe": self.premium_safe(limit=20),
+            "pending_odds": self.pending_odds(),
+            "pending_deep": self.pending_deep(),
             "rejection_summary": self.rejection_summary(),
             "deep_premium_audit": self.deep_premium_audit(picks),
             "pipeline": self.pipeline_status(),
