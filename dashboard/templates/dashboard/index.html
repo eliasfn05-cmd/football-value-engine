@@ -16,7 +16,11 @@
         <p class="subtitle">Sprint 7.5.1 · Market-Calibrated Value · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
       </div>
       <div class="hero-actions">
-        <form id="premium-generator-form">{% csrf_token %}
+        <form id="premium-generator-form" class="premium-generator-form">{% csrf_token %}
+          <label class="date-picker-wrap" for="premium-target-date">
+            <span>Fecha de partidos</span>
+            <input id="premium-target-date" class="date-picker" type="date" value="{{ selected_date_iso }}" min="{{ today_iso }}">
+          </label>
           <button id="generate-premium" class="generate-button" type="button" {% if not pipeline_trigger_configured %}disabled{% endif %}>Generar Picks Premium</button>
         </form>
         <div class="status-pill"><span></span> Producción</div>
@@ -27,7 +31,7 @@
       <div class="generation-head">
         <div>
           <p class="eyebrow">GENERACIÓN</p>
-          <strong id="generation-status">{% if pipeline_trigger_configured %}Listo para generar el Top Premium del día.{% else %}Configuración pendiente: agrega GITHUB_ACTIONS_TOKEN y PIPELINE_TRIGGER_PIN en Render.{% endif %}</strong>
+          <strong id="generation-status">{% if pipeline_trigger_configured %}Listo para generar el Top Premium del {{ selected_date|date:"d/m/Y" }}.{% else %}Configuración pendiente: agrega GITHUB_ACTIONS_TOKEN y PIPELINE_TRIGGER_PIN en Render.{% endif %}</strong>
         </div>
         <span id="generation-percent" class="generation-percent">0%</span>
       </div>
@@ -37,7 +41,7 @@
     </section>
 
     <section class="metrics-grid operational-grid">
-      <article class="metric-card"><span>Partidos analizados</span><strong>{{ operational.fixtures_analyzed }}</strong><small>Próximos eventos evaluados</small></article>
+      <article class="metric-card"><span>Partidos analizados</span><strong>{{ operational.fixtures_analyzed }}</strong><small>Eventos del {{ selected_date|date:"d/m/Y" }}</small></article>
       <article class="metric-card"><span>Picks Premium</span><strong>{{ operational.premium_count }}</strong><small>Máximo 3 selecciones operativas</small></article>
       <article class="metric-card"><span>EV promedio</span><strong>{% if operational.avg_ev_pct != None %}+{{ operational.avg_ev_pct }}%{% else %}—{% endif %}</strong><small>EV bruto de picks seleccionados</small></article>
       <article class="metric-card"><span>Rank promedio</span><strong>{% if operational.avg_rank_score != None %}{{ operational.avg_rank_score }}{% else %}—{% endif %}</strong><small>Premium Rank Score / 100</small></article>
@@ -46,7 +50,7 @@
     {% if premium_picks %}
     <section class="panel premium-panel">
       <div class="panel-head">
-        <div><p class="eyebrow">SELECCIÓN OFICIAL</p><h2>Top Premium del día</h2></div>
+        <div><p class="eyebrow">SELECCIÓN OFICIAL</p><h2>Top Premium · {{ selected_date|date:"d/m/Y" }}</h2></div>
         <button id="copy-picks" class="action-button" type="button">Copiar Picks</button>
       </div>
       <div class="premium-grid" id="premium-picks">
@@ -75,7 +79,7 @@
     {% else %}
     <section class="no-bet-card">
       <div class="no-bet-icon">—</div>
-      <div><p class="eyebrow">DECISIÓN DEL MODELO</p><h2>NO BET</h2><p>Ninguna predicción superó todas las validaciones de Sprint 7.5.1. El sistema no publicará picks por obligación.</p></div>
+      <div><p class="eyebrow">DECISIÓN DEL MODELO · {{ selected_date|date:"d/m/Y" }}</p><h2>NO BET</h2><p>Ninguna predicción superó todas las validaciones de Sprint 7.5.1 para la fecha seleccionada. El sistema no publicará picks por obligación.</p></div>
     </section>
     {% endif %}
 
@@ -103,6 +107,7 @@
     });
 
     const generateButton = document.getElementById('generate-premium');
+    const targetDateInput = document.getElementById('premium-target-date');
     const statusBox = document.getElementById('generation-status');
     const stageBox = document.getElementById('generation-stage');
     const stagesBox = document.getElementById('generation-stages');
@@ -110,6 +115,14 @@
     const progressLabel = document.getElementById('generation-percent');
     const csrfToken = document.querySelector('#premium-generator-form input[name="csrfmiddlewaretoken"]')?.value;
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    if (targetDateInput) targetDateInput.addEventListener('change', () => {
+      if (!targetDateInput.value) return;
+      const url = new URL(window.location.href);
+      url.searchParams.set('date', targetDateInput.value);
+      window.history.replaceState({}, '', url);
+      statusBox.textContent = `Listo para generar el Top Premium del ${targetDateInput.value}.`;
+    });
 
     function renderGeneration(data) {
       const job = data.job;
@@ -144,7 +157,11 @@
         const job = data.job;
         if (job && (job.status === 'SUCCESS' || job.status === 'PARTIAL')) {
           statusBox.textContent = `Completado · ${data.premium_count} Pick(s) Premium. Actualizando página…`;
-          await sleep(1200); window.location.reload(); return;
+          await sleep(1200);
+          const url = new URL(window.location.href);
+          url.searchParams.set('date', job.target_date);
+          window.location.href = url.toString();
+          return;
         }
         if (job && job.status === 'FAILED') {
           statusBox.textContent = job.message || 'La generación terminó con error.';
@@ -160,16 +177,22 @@
     }
 
     if (generateButton) generateButton.addEventListener('click', async () => {
-      const pin = window.prompt('Ingresa el PIN operativo para generar los Picks Premium:');
+      const targetDate = targetDateInput?.value;
+      if (!targetDate) {
+        statusBox.textContent = 'Selecciona primero la fecha de los partidos.';
+        targetDateInput?.focus();
+        return;
+      }
+      const pin = window.prompt(`Ingresa el PIN operativo para generar los Picks Premium del ${targetDate}:`);
       if (!pin) return;
       generateButton.disabled = true;
       generateButton.textContent = 'Generando…';
-      statusBox.textContent = 'Creando trabajo seguro…';
+      statusBox.textContent = `Creando trabajo seguro para ${targetDate}…`;
       stageBox.textContent = 'Etapa actual: QUEUE';
       try {
         const response = await fetch('{% url "generate-premium-picks" %}', {
           method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},
-          body:JSON.stringify({pin})
+          body:JSON.stringify({pin, target_date: targetDate})
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.message || 'No se pudo iniciar el pipeline.');
