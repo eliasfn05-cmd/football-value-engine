@@ -2,7 +2,7 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime, time as dt_time, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -10,10 +10,11 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
+from engine.competition_quality import classify_competition
 from engine.model_diagnostics import ModelDiagnosticsService
 from engine.models import DailyPremiumSelection, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
-from engine.value_policy import PREMIUM_MIN_EV, PREMIUM_VALUE_MAX_ODDS, PREMIUM_VALUE_MIN_ODDS
+from engine.value_policy import PREMIUM_MIN_EV, PREMIUM_VALUE_MAX_ODDS, PREMIUM_VALUE_MIN_ODDS, is_premium_value_odds
 from scanner.models import PremiumGenerationJob
 
 from .pipeline_trigger import GitHubPipelineTrigger
@@ -56,14 +57,72 @@ def _interactive_pipeline_mode(target_date) -> str:
     return "refresh" if exists else "full"
 
 
-def _validated_pending_odds(*, limit: int = 20):
-    """Only show missing prices that can still become operational Premium picks.
+def _parse_target_date(raw_value, *, default_today: bool = True):
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return timezone.localdate() if default_today else None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
 
-    Low-probability/low-score rows are not an information problem: they already
-    failed discovery and must be treated as discarded, not as pending. This uses
-    the same High Recall Candidate Pool as enrichment so dashboard and pipeline
-    cannot disagree about which unpriced markets deserve an odds lookup.
-    """
+
+def _selected_date_picks(target_date, *, limit: int = 3):
+    service = DashboardService()
+    rows = []
+    candidates = (
+        DailyPremiumSelection.objects.select_related(
+            "prediction",
+            "prediction__fixture",
+            "prediction__fixture__home_team",
+            "prediction__fixture__away_team",
+            "prediction__fixture__competition_ref",
+        )
+        .filter(target_date=target_date, model_version=V8_MODEL_VERSION)
+        .order_by("rank")
+    )
+    for row in candidates.iterator(chunk_size=20):
+        prediction = row.prediction
+        if classify_competition(prediction.fixture).excluded:
+            continue
+        if not is_premium_value_odds(prediction.market_odds):
+            continue
+        if prediction.expected_value is None or prediction.expected_value < PREMIUM_MIN_EV:
+            continue
+        deep = service._deep_state(prediction)
+        if deep.get("status") != "complete" or deep.get("passed") is not True or deep.get("preferred_market") is not True:
+            continue
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _selected_date_operational(target_date, picks):
+    start = timezone.make_aware(datetime.combine(target_date, dt_time.min))
+    end = start + timedelta(days=1)
+    unique_fixtures = Prediction.objects.filter(
+        model_version=V8_MODEL_VERSION,
+        fixture__kickoff__gte=start,
+        fixture__kickoff__lt=end,
+    ).values("fixture_id").distinct().count()
+    if picks:
+        avg_ev = sum(float(row.prediction.expected_value or 0) for row in picks) / len(picks)
+        avg_score = sum(float(row.prediction.score) for row in picks) / len(picks)
+        avg_rank = sum(float(row.premium_rank_score) for row in picks) / len(picks)
+    else:
+        avg_ev = avg_score = avg_rank = None
+    return {
+        "fixtures_analyzed": unique_fixtures,
+        "premium_count": len(picks),
+        "avg_ev_pct": round(avg_ev * 100, 1) if avg_ev is not None else None,
+        "avg_score": round(avg_score, 1) if avg_score is not None else None,
+        "avg_rank_score": round(avg_rank, 1) if avg_rank is not None else None,
+        "action": "BET" if picks else "NO_BET",
+    }
+
+
+def _validated_pending_odds(*, limit: int = 20):
     today = timezone.localdate()
     pool = high_recall_candidate_pool(
         today,
@@ -97,12 +156,20 @@ def health(request):
 
 def dashboard_home(request):
     _expire_stale_generation_jobs()
-    context = DashboardService().build()
+    selected_date = _parse_target_date(request.GET.get("date")) or timezone.localdate()
+    service = DashboardService()
+    context = service.build()
+    picks = _selected_date_picks(selected_date)
+    context["premium_picks"] = picks
+    context["operational"] = _selected_date_operational(selected_date, picks)
+    context["selected_date"] = selected_date
+    context["selected_date_iso"] = selected_date.isoformat()
+    context["today_iso"] = timezone.localdate().isoformat()
     context["pipeline_trigger_configured"] = GitHubPipelineTrigger().configured and bool(
         os.getenv("PIPELINE_TRIGGER_PIN", "").strip()
     )
     active_job = PremiumGenerationJob.objects.filter(
-        target_date=timezone.localdate(),
+        target_date=selected_date,
         status__in=PremiumGenerationJob.ACTIVE_STATUSES,
     ).first()
     context["active_generation_job_id"] = active_job.id if active_job else None
@@ -112,7 +179,6 @@ def dashboard_home(request):
 def developer_dashboard(request):
     service = DashboardService()
     context = service.build_developer()
-    # Never present already-disqualified rows as "missing information".
     context["pending_odds"] = _validated_pending_odds(limit=20)
     context["model_diagnostics"] = ModelDiagnosticsService().build()
     context["deep_premium"] = service.premium_picks(limit=3)
@@ -132,13 +198,19 @@ def generate_premium_picks(request):
     supplied_pin = str(payload.get("pin") or "").strip()
     if not hmac.compare_digest(supplied_pin, expected_pin):
         return JsonResponse({"ok": False, "message": "PIN incorrecto."}, status=403)
-    target_date = timezone.localdate()
+
+    target_date = _parse_target_date(payload.get("target_date"), default_today=False)
+    if target_date is None:
+        return JsonResponse({"ok": False, "message": "Selecciona una fecha válida para los partidos."}, status=400)
+    if target_date < timezone.localdate():
+        return JsonResponse({"ok": False, "message": "La generación operativa solo admite hoy o fechas futuras."}, status=400)
+
     active_job = PremiumGenerationJob.objects.filter(
         target_date=target_date,
         status__in=PremiumGenerationJob.ACTIVE_STATUSES,
     ).first()
     if active_job:
-        return JsonResponse({"ok": True, "already_running": True, "message": "Ya hay una generación en curso.", "job_id": active_job.id, "target_date": active_job.target_date.isoformat()})
+        return JsonResponse({"ok": True, "already_running": True, "message": "Ya hay una generación en curso para esa fecha.", "job_id": active_job.id, "target_date": active_job.target_date.isoformat()})
     now_ts = time.time()
     last_trigger = float(request.session.get("premium_trigger_ts", 0) or 0)
     if now_ts - last_trigger < 45:
@@ -150,8 +222,8 @@ def generate_premium_picks(request):
         status=PremiumGenerationJob.STATUS_QUEUED,
         current_stage="QUEUE",
         progress_pct=0,
-        message="Solicitud creada; enviando al worker.",
-        metadata={"source": "dashboard", "interactive_fast": True, "resolved_mode": mode},
+        message=f"Solicitud creada para {target_date.isoformat()}; enviando al worker.",
+        metadata={"source": "dashboard", "interactive_fast": True, "resolved_mode": mode, "selected_date": target_date.isoformat()},
     )
     result = GitHubPipelineTrigger().dispatch(target_date=target_date, mode=mode, generation_job_id=job.id)
     if not result.accepted:
@@ -165,7 +237,7 @@ def generate_premium_picks(request):
     job.status = PremiumGenerationJob.STATUS_DISPATCHED
     job.current_stage = "QUEUE"
     job.progress_pct = 1
-    job.message = f"En cola; modo rápido {mode}, esperando worker de GitHub Actions."
+    job.message = f"En cola para {target_date.isoformat()}; modo {mode}, esperando worker de GitHub Actions."
     job.dispatched_at = timezone.now()
     job.save(update_fields=["status", "current_stage", "progress_pct", "message", "dispatched_at"])
     request.session["premium_trigger_ts"] = now_ts
@@ -192,7 +264,6 @@ def premium_generation_status(request):
     premium_count = DailyPremiumSelection.objects.filter(
         target_date=job.target_date,
         model_version=V8_MODEL_VERSION,
-        prediction__fixture__kickoff__gte=timezone.now(),
         prediction__market_odds__gte=PREMIUM_VALUE_MIN_ODDS,
         prediction__market_odds__lte=PREMIUM_VALUE_MAX_ODDS,
         prediction__expected_value__gte=PREMIUM_MIN_EV,
