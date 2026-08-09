@@ -56,6 +56,14 @@ def _preliminary_score(prediction: Prediction) -> float:
         + 0.05 * data_quality
         + 0.04 * sample_confidence
     )
+    # Missing odds must not be pushed to the bottom solely because edge/EV
+    # cannot yet be computed. High raw probability earns a small discovery
+    # bonus so the odds enrichment stage gets a chance to resolve the market.
+    if prediction.market_odds is None:
+        if prediction.market == "OVER_2_5" and float(prediction.probability or 0.0) >= 0.61:
+            composite += 8.0
+        elif prediction.market == "BTTS" and float(prediction.probability or 0.0) >= 0.59:
+            composite += 8.0
     return round(composite, 3)
 
 
@@ -67,9 +75,9 @@ def high_recall_candidate_pool(
 ) -> list[CandidatePoolEntry]:
     """Return a diverse high-recall fixture pool.
 
-    One market is kept per fixture. When ``require_premium_value_odds`` is true,
-    only quoted markets inside 1.60-2.40 with minimum positive value enter the
-    expensive enrichment/Deep Analysis queue.
+    One market is kept per fixture. Unquoted markets with a probability already
+    above the operational market floor are deliberately retained so enrichment
+    can fetch the missing price before edge/EV are judged.
     """
     rule = rule or CandidatePoolRule()
     start, end = _bounds(target_date)
@@ -86,6 +94,7 @@ def high_recall_candidate_pool(
             Q(score__gte=rule.min_score)
             | Q(edge__gte=rule.min_edge)
             | Q(expected_value__gte=rule.min_ev)
+            | Q(market_odds__isnull=True, probability__gte=0.59)
         )
     )
 
@@ -106,6 +115,11 @@ def high_recall_candidate_pool(
             reasons.append("edge")
         if prediction.expected_value is not None and float(prediction.expected_value) >= rule.min_ev:
             reasons.append("ev")
+        if prediction.market_odds is None:
+            probability = float(prediction.probability or 0.0)
+            market_floor = 0.59 if prediction.market == "BTTS" else 0.61 if prediction.market == "OVER_2_5" else 1.0
+            if probability >= market_floor:
+                reasons.append("missing_odds_high_probability")
         if not reasons:
             continue
 
