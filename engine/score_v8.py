@@ -7,12 +7,14 @@ from django.conf import settings
 
 from .features import FeatureEngineeringService, FeatureVector
 from .market_confidence import MarketConfidenceService
+from .market_intelligence import MarketIntelligenceService
 from .model import FootballValueEngine
 from .models import Fixture, Prediction
 from .quantitative import MarketQuote, MatchContext, TeamProfile
 
 
 V8_MODEL_VERSION = "v8.0-sprint4-score"
+MARKET_INTELLIGENCE_VERSION = "sprint6.6"
 
 
 @dataclass(frozen=True)
@@ -25,22 +27,24 @@ class V8RuleConfig:
     lineup_mild_attack_factor: float = 0.96
     market_confidence_neutral: float = 65.0
     market_confidence_penalty_factor: float = 0.45
+    market_intelligence_neutral: float = 65.0
+    market_intelligence_penalty_factor: float = 0.35
 
 
 class ScoreEngineV8:
     """V8 scoring layer built on reproducible persisted features.
 
     V7's Poisson/value engine remains the quantitative core. V8 adds explicit
-    data-quality/sample-size gates, lineup adjustments and Sprint 6.4 market
-    context validation. Every decision is written to `reasons` so backtesting
-    can isolate the value of each rule instead of treating the model as a black
-    box.
+    data-quality/sample-size gates, lineup adjustments, Sprint 6.4 market
+    confidence and Sprint 6.6 market-selection intelligence. Every decision is
+    written to `reasons` so backtesting can isolate each rule.
     """
 
     def __init__(self, config: V8RuleConfig | None = None):
         self.config = config or V8RuleConfig()
         self.core = FootballValueEngine()
         self.market_confidence = MarketConfidenceService()
+        self.market_intelligence = MarketIntelligenceService()
         self.core.min_edge = float(getattr(settings, "MIN_EDGE", self.core.min_edge))
         self.core.min_ev = float(getattr(settings, "MIN_EV", self.core.min_ev))
 
@@ -122,9 +126,10 @@ class ScoreEngineV8:
             failures.append("insufficient_away_venue_sample")
         return not failures, failures
 
-    def _adjust_score_for_market_confidence(self, raw_score: float, confidence: float) -> tuple[float, float]:
-        shortfall = max(0.0, self.config.market_confidence_neutral - confidence)
-        penalty = round(shortfall * self.config.market_confidence_penalty_factor, 1)
+    @staticmethod
+    def _adjust_score(raw_score: float, signal: float, neutral: float, factor: float) -> tuple[float, float]:
+        shortfall = max(0.0, neutral - signal)
+        penalty = round(shortfall * factor, 1)
         return round(max(0.0, float(raw_score) - penalty), 1), penalty
 
     def evaluate(self, fixture: Fixture, features: FeatureVector | None = None) -> dict[str, Any]:
@@ -148,14 +153,27 @@ class ScoreEngineV8:
         result: dict[str, Any] = {}
         for key, evaluation in core_result.items():
             market_check = self.market_confidence.evaluate(fixture, features, evaluation.market)
-            adjusted_score, confidence_penalty = self._adjust_score_for_market_confidence(
+            score_after_confidence, confidence_penalty = self._adjust_score(
                 evaluation.score,
                 market_check.score,
+                self.config.market_confidence_neutral,
+                self.config.market_confidence_penalty_factor,
             )
+
+            intelligence = self.market_intelligence.evaluate(features, evaluation.market)
+            adjusted_score, intelligence_penalty = self._adjust_score(
+                score_after_confidence,
+                intelligence.score,
+                self.config.market_intelligence_neutral,
+                self.config.market_intelligence_penalty_factor,
+            )
+
             gate_failures = list(base_gate_failures)
             if not market_check.passed:
                 gate_failures.extend(market_check.failures)
-            gates_passed = base_gates_passed and market_check.passed
+            if not intelligence.passed:
+                gate_failures.extend(intelligence.failures)
+            gates_passed = base_gates_passed and market_check.passed and intelligence.passed
 
             reasons = dict(evaluation.reasons)
             reasons.update(audit)
@@ -168,6 +186,13 @@ class ScoreEngineV8:
             reasons["market_confidence_failures"] = market_check.failures
             reasons["market_confidence_evidence"] = market_check.evidence
             reasons["market_confidence_penalty"] = confidence_penalty
+            reasons["score_after_market_confidence"] = score_after_confidence
+            reasons["market_intelligence_version"] = MARKET_INTELLIGENCE_VERSION
+            reasons["market_intelligence_score"] = intelligence.score
+            reasons["market_intelligence_passed"] = intelligence.passed
+            reasons["market_intelligence_failures"] = intelligence.failures
+            reasons["market_intelligence_evidence"] = intelligence.evidence
+            reasons["market_intelligence_penalty"] = intelligence_penalty
             reasons["model_version"] = V8_MODEL_VERSION
 
             tier = evaluation.tier if gates_passed else ""
