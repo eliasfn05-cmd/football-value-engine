@@ -8,6 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .competition_quality import classify_competition
+from .deep_analysis import DEEP_ANALYSIS_VERSION
 from .models import DailyPremiumSelection, Prediction
 from .score_v8 import V8_MODEL_VERSION
 
@@ -28,13 +29,11 @@ TIER_RULES = (
     TierRule("C", 84.0, 0.05, 0.06, 0.59, 0.61),
 )
 
-# Sprint 6.10: only Score may relax. Probability, Edge, EV, official competition,
-# V8 hard gates and market validation remain mandatory.
 DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0)
 
 
 class DailyPremiumSelector:
-    """Select up to three daily Premium picks without forcing volume."""
+    """Select at most one Sprint 7.0 validated market per fixture and three picks per day."""
 
     def __init__(self, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
         self.model_version = model_version
@@ -51,11 +50,18 @@ class DailyPremiumSelector:
 
     @classmethod
     def _passes_hard_value_floors(cls, prediction: Prediction) -> bool:
-        competition_quality = classify_competition(prediction.fixture)
-        if competition_quality.excluded:
+        if classify_competition(prediction.fixture).excluded:
             return False
         reasons = prediction.reasons or {}
         if not reasons.get("v8_gates_passed", False):
+            return False
+        # Sprint 7.0: only the deeply validated winner of BTTS vs Over for a
+        # fixture can reach the daily ranking.
+        if reasons.get("deep_analysis_version") != DEEP_ANALYSIS_VERSION:
+            return False
+        if reasons.get("deep_analysis_passed") is not True:
+            return False
+        if reasons.get("deep_preferred_market") is not True:
             return False
         if prediction.market_odds is None or prediction.edge is None or prediction.expected_value is None:
             return False
@@ -74,12 +80,10 @@ class DailyPremiumSelector:
     def _tier_for(cls, prediction: Prediction, *, score_floor: float = 84.0) -> str | None:
         if not cls._passes_hard_value_floors(prediction):
             return None
-
         probability = float(prediction.probability)
         score = float(prediction.score)
         edge = float(prediction.edge)
         ev = float(prediction.expected_value)
-
         for rule in TIER_RULES:
             effective_score = rule.min_score
             if rule.name == "C":
@@ -93,54 +97,35 @@ class DailyPremiumSelector:
                 return rule.name
         return None
 
-    @staticmethod
-    def _quote_quality(prediction: Prediction) -> float:
-        bookmaker = str((prediction.reasons or {}).get("bookmaker") or "").strip().lower()
-        if bookmaker == "betano":
-            return 100.0
-        if bookmaker:
-            return 75.0
-        return 0.0
-
     @classmethod
     def _rank_score(cls, prediction: Prediction) -> tuple[float, dict]:
-        competition_quality = classify_competition(prediction.fixture)
         score_component = max(0.0, min(float(prediction.score), 100.0))
+        probability_component = max(0.0, min(float(prediction.probability), 1.0)) * 100.0
         ev = max(0.0, float(prediction.expected_value or 0))
         edge = max(0.0, float(prediction.edge or 0))
         ev_component = min(ev / 0.25, 1.0) * 100.0
         edge_component = min(edge / 0.15, 1.0) * 100.0
-        reasons = prediction.reasons or {}
-        data_quality = float(reasons.get("data_quality_score") or 0.0)
-        sample_confidence = float(reasons.get("venue_sample_confidence") or 0.0) * 100.0
-        quote_quality = cls._quote_quality(prediction)
-        evidence_quality_component = 0.50 * data_quality + 0.25 * sample_confidence + 0.25 * quote_quality
-        competition_component = competition_quality.quality_score
-
         composite = (
-            0.35 * score_component
-            + 0.25 * ev_component
-            + 0.20 * edge_component
-            + 0.10 * evidence_quality_component
-            + 0.10 * competition_component
+            0.30 * score_component
+            + 0.30 * ev_component
+            + 0.25 * edge_component
+            + 0.15 * probability_component
         )
+        reasons = prediction.reasons or {}
         rationale = {
             "score_component": round(score_component, 2),
+            "probability_component": round(probability_component, 2),
             "ev_component": round(ev_component, 2),
             "edge_component": round(edge_component, 2),
-            "data_quality": round(data_quality, 2),
-            "sample_confidence": round(sample_confidence, 2),
-            "quote_quality": round(quote_quality, 2),
-            "evidence_quality_component": round(evidence_quality_component, 2),
-            "competition_quality_level": competition_quality.level,
-            "competition_quality_label": competition_quality.label,
-            "competition_quality_score": competition_quality.quality_score,
-            "competition_quality_reason": competition_quality.reason,
+            "deep_analysis_version": reasons.get("deep_analysis_version"),
+            "deep_analysis_evidence": reasons.get("deep_analysis_evidence") or {},
+            "deep_analysis_warnings": reasons.get("deep_analysis_warnings") or [],
+            "deep_score": reasons.get("deep_score"),
             "probability": float(prediction.probability),
             "market_odds": float(prediction.market_odds) if prediction.market_odds is not None else None,
             "edge": float(prediction.edge) if prediction.edge is not None else None,
             "expected_value": float(prediction.expected_value) if prediction.expected_value is not None else None,
-            "formula": "0.35*score + 0.25*ev + 0.20*edge + 0.10*evidence_quality + 0.10*competition_quality",
+            "formula": "0.30*deep_score + 0.30*ev + 0.25*edge + 0.15*probability",
         }
         return round(composite, 2), rationale
 
