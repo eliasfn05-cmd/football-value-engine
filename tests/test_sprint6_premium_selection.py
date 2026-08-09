@@ -39,6 +39,7 @@ class Sprint6PremiumSelectionTests(TestCase):
             reasons={
                 "v8_gates_passed": True,
                 "data_quality_score": 85.0,
+                "venue_sample_confidence": 0.8,
                 "bookmaker": "Betano",
             },
         )
@@ -69,8 +70,22 @@ class Sprint6PremiumSelectionTests(TestCase):
         fixture_ids = [row.prediction.fixture_id for row in rows]
         self.assertEqual(len(fixture_ids), len(set(fixture_ids)))
 
-    def test_returns_no_bet_when_candidates_miss_tier_c_floor(self):
+    def test_returns_no_bet_when_hard_value_floors_fail(self):
         self._prediction(1, score="83.00", edge="0.04000", ev="0.05000", probability="0.58000")
+        rows = DailyPremiumSelector().select(timezone.localdate())
+        self.assertEqual(rows, [])
+
+    def test_dynamic_score_floor_can_recover_valid_value_pick(self):
+        self._prediction(1, score="82.00", edge="0.06000", ev="0.08000", probability="0.62000")
+        rows = DailyPremiumSelector().select(timezone.localdate())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].premium_tier, "C")
+        self.assertEqual(float(rows[0].rationale["selector_dynamic_floor_used"]), 82.0)
+
+    def test_dynamic_floor_never_relaxes_probability_edge_or_ev(self):
+        self._prediction(1, score="83.00", edge="0.04900", ev="0.20000", probability="0.80000")
+        self._prediction(2, score="83.00", edge="0.20000", ev="0.05900", probability="0.80000")
+        self._prediction(3, score="83.00", edge="0.20000", ev="0.20000", probability="0.58000")
         rows = DailyPremiumSelector().select(timezone.localdate())
         self.assertEqual(rows, [])
 
