@@ -34,19 +34,20 @@ class TierRule:
     min_reliability: float
 
 
+# Sprint 7.5: probability is no longer judged by a single rigid 59/61% cutoff.
+# A 57% event at 2.15 can be a stronger value bet than a 66% event at 1.45.
+# Final admission therefore combines a modest absolute probability floor with
+# calibrated edge versus the market, reliable EV, Deep validation and reliability.
 TIER_RULES = (
-    TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.63, 0.65, TIER_A_MIN_RELIABILITY),
-    TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.59, 0.61, PREMIUM_MIN_RELIABILITY),
+    TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.58, 0.60, TIER_A_MIN_RELIABILITY),
+    TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.54, 0.56, PREMIUM_MIN_RELIABILITY),
 )
 
-# Score relaxation is only a ranking/completeness mechanism for Tier B. It never
-# relaxes odds, Deep Analysis, calibrated probability, calibrated edge, reliable
-# EV or reliability hard gates.
 DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0)
 
 
 class DailyPremiumSelector:
-    """Select up to three Deep-validated, probability-calibrated Premium Value markets."""
+    """Select up to three Deep-validated, market-calibrated Premium Value markets."""
 
     calibrator = ProbabilityEVCalibrationService()
 
@@ -62,6 +63,14 @@ class DailyPremiumSelector:
     @staticmethod
     def _probability_floor(rule: TierRule, market: str) -> float:
         return rule.min_btts_probability if market == "BTTS" else rule.min_over25_probability
+
+    @staticmethod
+    def _base_probability_floor(market: str) -> float:
+        if market == "BTTS":
+            return 0.54
+        if market == "OVER_2_5":
+            return 0.56
+        return 1.0
 
     @classmethod
     def _passes_hard_value_floors(cls, prediction: Prediction) -> bool:
@@ -85,17 +94,19 @@ class DailyPremiumSelector:
         if not calibration.premium_reliable:
             return False
 
-        probability = calibration.calibrated_probability
-        if prediction.market == "BTTS":
-            if probability < 0.59:
-                return False
-        elif prediction.market == "OVER_2_5":
-            if probability < 0.61:
-                return False
-        else:
+        # Professional market-calibrated gate: retain a minimum statistical base,
+        # but require the calibrated estimate to beat the market by at least 5pp.
+        # This removes the previous double restriction where a high-value 56-59%
+        # outcome was rejected solely because it missed an arbitrary absolute floor.
+        if prediction.market not in {"BTTS", "OVER_2_5"}:
             return False
-
-        return calibration.calibrated_edge >= 0.05 and calibration.reliable_ev >= float(PREMIUM_MIN_EV)
+        if calibration.calibrated_probability < cls._base_probability_floor(prediction.market):
+            return False
+        if calibration.calibrated_edge < 0.05:
+            return False
+        if calibration.reliable_ev < float(PREMIUM_MIN_EV):
+            return False
+        return True
 
     @classmethod
     def _tier_for(cls, prediction: Prediction, *, score_floor: float = 84.0) -> str | None:
@@ -152,6 +163,7 @@ class DailyPremiumSelector:
             "probability_calibration": calibration.as_dict(),
             "raw_probability": calibration.raw_probability,
             "calibrated_probability": calibration.calibrated_probability,
+            "market_implied_probability": calibration.implied_probability,
             "market_odds": float(prediction.market_odds) if prediction.market_odds is not None else None,
             "raw_edge": calibration.raw_edge,
             "calibrated_edge": calibration.calibrated_edge,
@@ -160,6 +172,7 @@ class DailyPremiumSelector:
             "reliable_expected_value": calibration.reliable_ev,
             "probability_reliability": calibration.reliability,
             "odds_policy": "Premium Value 1.60-2.40",
+            "value_gate": "Sprint 7.5 market-calibrated: absolute base + calibrated edge + reliable EV",
             "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*calibrated_probability + 0.15*reliability",
         }
         return round(composite, 2), rationale
@@ -215,11 +228,6 @@ class DailyPremiumSelector:
             )
         )
 
-        # Previous behavior stopped as soon as *one* candidate existed at 84.
-        # That prevented legitimate Tier-B selections at the intended dynamic
-        # floor 82/80 from filling #2 and #3. We now keep relaxing only the score
-        # floor until the requested number of unique fixtures is available, while
-        # every hard value/reliability/Deep gate remains unchanged.
         ranked = []
         selected_floor = DYNAMIC_SCORE_FLOORS[-1]
         for score_floor in DYNAMIC_SCORE_FLOORS:
