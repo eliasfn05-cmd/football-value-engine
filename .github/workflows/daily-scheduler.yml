@@ -44,6 +44,8 @@ jobs:
       ALLOWED_HOSTS: localhost,127.0.0.1
       DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      ODDS_API_IO_KEY: ${{ secrets.ODDS_API_IO_KEY }}
+      ODDS_API_IO_BOOKMAKERS: Betano,Bet365,Betfair,Unibet,1xBet,Betway
       PREFERRED_BOOKMAKER: Betano
       APP_TIMEZONE: America/Lima
       MODEL_VERSION: "8.0"
@@ -73,6 +75,11 @@ jobs:
           if [ -z "$API_FOOTBALL_KEY" ]; then
             echo "Missing GitHub secret: API_FOOTBALL_KEY"
             exit 1
+          fi
+          if [ -z "$ODDS_API_IO_KEY" ]; then
+            echo "WARNING: GitHub secret ODDS_API_IO_KEY is missing; secondary odds fallback will be disabled."
+          else
+            echo "Secondary odds fallback: Odds-API.io enabled."
           fi
 
       - name: Resolve Lima date and mode
@@ -119,7 +126,7 @@ jobs:
             export PREMIUM_INTERACTIVE_FAST=1
             ATTEMPTS=2
             RETRY_DELAY=1
-            echo "Interactive Premium fast path enabled: Sprint 6.5 high-recall pool<=12, no history backfill/standings, near-kickoff lineups only."
+            echo "Interactive Premium fast path enabled: high-recall sweep up to 40 fixtures, multi-source odds, no standings backfill, near-kickoff lineups only."
           fi
           python manage.py daily_pipeline \
             --mode "${{ steps.schedule.outputs.mode }}" \
