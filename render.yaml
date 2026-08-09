@@ -19,6 +19,10 @@ services:
           property: connectionString
       - key: API_FOOTBALL_KEY
         sync: false
+      - key: ODDS_API_IO_KEY
+        sync: false
+      - key: ODDS_API_IO_BOOKMAKERS
+        value: Betano,Bet365,Betfair,Unibet,1xBet,Betway
       - key: PREFERRED_BOOKMAKER
         value: Betano
       - key: APP_TIMEZONE
