@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from backtesting.models import PredictionOutcome
 from dashboard.pipeline_trigger import TriggerResult
+from engine.deep_analysis import DEEP_ANALYSIS_VERSION
 from engine.models import DailyPremiumSelection, Fixture, Prediction, Team
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.models import PipelineRun, PipelineStageRun, PremiumGenerationJob
@@ -28,6 +29,23 @@ class DashboardTests(TestCase):
             away_team=self.away,
             status="NS",
         )
+        deep = {
+            "version": DEEP_ANALYSIS_VERSION,
+            "status": "complete",
+            "passed": True,
+            "preferred_market": True,
+            "score": 92.0,
+            "v8_score": 94.0,
+            "warnings": [],
+            "failures": [],
+            "home_n": 10,
+            "away_n": 10,
+            "home_over25": 0.6,
+            "away_over25": 0.6,
+            "home_btts": 0.6,
+            "away_btts": 0.6,
+            "evidence": {},
+        }
         return Prediction.objects.create(
             fixture=fixture,
             model_version=V8_MODEL_VERSION,
@@ -40,7 +58,20 @@ class DashboardTests(TestCase):
             expected_value=Decimal("0.26000"),
             score=Decimal("92.00"),
             tier=tier,
-            reasons={"v8_gates_passed": True, "data_quality_score": 85.0, "bookmaker": "Betano"},
+            reasons={
+                "v8_gates_passed": True,
+                "data_quality_score": 85.0,
+                "bookmaker": "Betano",
+                "market_confidence_passed": True,
+                "market_intelligence_passed": True,
+                "deep_analysis": deep,
+                "deep_analysis_version": DEEP_ANALYSIS_VERSION,
+                "deep_analysis_status": "complete",
+                "deep_analysis_passed": True,
+                "deep_preferred_market": True,
+                "deep_score": 92.0,
+                "score_before_deep_analysis": 94.0,
+            },
         )
 
     def _select(self, prediction, *, rank=1, premium_tier="A"):
@@ -79,6 +110,15 @@ class DashboardTests(TestCase):
         self.assertContains(response, "OVER_2_5")
         self.assertContains(response, "Copiar Picks")
         self.assertNotContains(response, "NO BET")
+
+    def test_dashboard_hides_selection_without_completed_deep_analysis(self):
+        prediction = self._prediction(kickoff=timezone.now() + timedelta(hours=4))
+        prediction.reasons = {"v8_gates_passed": True}
+        prediction.save(update_fields=["reasons"])
+        self._select(prediction, premium_tier="A")
+        response = self.client.get("/dashboard/")
+        self.assertContains(response, "NO BET")
+        self.assertNotContains(response, "PREMIUM A · #1")
 
     def test_near_premium_is_hidden_operationally_and_visible_in_developer(self):
         prediction = self._prediction(kickoff=timezone.now() + timedelta(hours=3), tier="", market="BTTS", odds="1.70")
