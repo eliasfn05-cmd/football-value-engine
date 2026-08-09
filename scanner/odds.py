@@ -76,13 +76,14 @@ def parse_quotes(
     payload: list[dict],
     preferred_bookmaker: str | None = None,
     *,
-    allow_fallback: bool = False,
+    allow_fallback: bool = True,
 ) -> dict[str, MarketQuote | None]:
     """Parse BTTS/Over 2.5 quotes with independent market fallback.
 
-    Multiple records for the same preferred bookmaker are merged. When fallback
-    is enabled, a missing market is filled independently from another bookmaker
-    instead of requiring both markets to come from the same book.
+    Multiple records for the same preferred bookmaker are merged. Production
+    defaults to fallback enabled so a missing Betano market can be completed by
+    another real bookmaker rather than leaving the candidate unrankable. Pass
+    ``allow_fallback=False`` only for strict diagnostics.
     """
     quotes = {"btts": None, "over25": None}
     preferred_rows = _preferred_bookmakers(payload, preferred_bookmaker)
