@@ -20,18 +20,18 @@ MIN_VENUE_SAMPLE = 3
 HISTORY_FETCH_LAST = 20
 HISTORY_WORKERS = 5
 STANDINGS_MAX_AGE_HOURS = 6
-INTERACTIVE_LIMIT = 12
-INTERACTIVE_MIN_SCORE = 82.0
-INTERACTIVE_MIN_EDGE = 0.07
-INTERACTIVE_MIN_EV = 0.10
+INTERACTIVE_LIMIT = 16
+INTERACTIVE_MIN_SCORE = 78.0
+INTERACTIVE_MIN_EDGE = 0.05
+INTERACTIVE_MIN_EV = 0.06
 INTERACTIVE_LINEUP_WINDOW_HOURS = 2
 
 
 class Command(BaseCommand):
     help = (
         "Enrich only the strongest future V8 candidates with historical venue samples, "
-        "live odds/lineups and competition standings. Interactive mode uses the Sprint "
-        "6.5 High Recall Candidate Pool instead of a score-only Top-N shortlist."
+        "live odds/lineups and competition standings. Interactive mode consumes the top "
+        "slice of the Sprint 6.9 wider High Recall Candidate Pool."
     )
 
     def add_arguments(self, parser):
@@ -122,7 +122,7 @@ class Command(BaseCommand):
 
         if interactive_fast:
             self.stdout.write(
-                f"[enrich] high_recall_pool={len(fixtures)} limit={limit} "
+                f"[enrich] high_recall_enrichment_slice={len(fixtures)} limit={limit} "
                 f"rules=score>={INTERACTIVE_MIN_SCORE:.0f}|edge>={INTERACTIVE_MIN_EDGE:.2f}|ev>={INTERACTIVE_MIN_EV:.2f}"
             )
             for index, fixture in enumerate(fixtures, start=1):
@@ -135,10 +135,6 @@ class Command(BaseCommand):
                 f"[enrich] future_candidates={len(fixtures)} min_score={min_score:.1f} limit={limit} interactive_fast=0"
             )
 
-        # Interactive dashboard generation must be responsive. The scheduled
-        # pipeline is responsible for filling historical venue gaps. If history
-        # is still insufficient, V8's data-quality gates reject the candidate
-        # rather than making the user wait for dozens of historical API calls.
         teams_to_backfill = [] if interactive_fast else self._teams_missing_venue_history(fixtures)
         self.stdout.write(
             f"[enrich] history gaps teams={len(teams_to_backfill)} min_venue_sample={MIN_VENUE_SAMPLE} "
@@ -217,8 +213,6 @@ class Command(BaseCommand):
                 no_odds_coverage += 1
                 self.stderr.write(f"[enrich] odds error fixture={fixture.external_id}: {exc}")
 
-            # Official lineups are usually unavailable many hours before kickoff.
-            # Avoid a low-value API call in interactive mode unless kickoff is near.
             should_fetch_lineup = (
                 not interactive_fast
                 or fixture.kickoff <= now + timedelta(hours=INTERACTIVE_LINEUP_WINDOW_HOURS)
@@ -264,7 +258,6 @@ class Command(BaseCommand):
 
     @staticmethod
     def _fetch_team_history(team_external_id: str, before_kickoff: datetime) -> list[dict]:
-        """Fetch one team's recent FT history using an isolated HTTP session."""
         provider = APIFootballProvider()
         raw_history = provider.team_recent_fixtures(team_external_id, last=HISTORY_FETCH_LAST)
         accepted: list[dict] = []
@@ -284,7 +277,6 @@ class Command(BaseCommand):
 
     @staticmethod
     def _teams_missing_venue_history(fixtures: list[Fixture]):
-        """Return each deficient team once, using its earliest shortlisted kickoff."""
         team_needs: dict[int, dict] = {}
         for fixture in fixtures:
             for team, venue in ((fixture.home_team, "home"), (fixture.away_team, "away")):
