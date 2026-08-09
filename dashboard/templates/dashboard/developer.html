@@ -31,10 +31,10 @@
     {% endif %}
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">SPRINT 7.0</p><h2>Deep Match Analysis · Premium actuales</h2></div><span class="count-badge">{{ deep_premium_audit|length }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">SPRINT 7.1</p><h2>Deep Match Analysis · Premium actuales</h2></div><span class="count-badge">{{ deep_premium_audit|length }}</span></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Partido</th><th>Mercado</th><th>Estado</th><th>Score final</th><th>V8 base</th><th>Home N</th><th>Home O2.5</th><th>Away N</th><th>Away O2.5</th><th>Home BTTS</th><th>Away BTTS</th><th>Advertencias</th></tr></thead>
+          <thead><tr><th>Partido</th><th>Mercado</th><th>Estado</th><th>Score final</th><th>V8 base</th><th>Support</th><th>Penaliz.</th><th>Home N</th><th>Home O2.5</th><th>Away N</th><th>Away O2.5</th><th>Home BTTS</th><th>Away BTTS</th><th>Advertencias</th></tr></thead>
           <tbody>
             {% for row in deep_premium_audit %}
             <tr>
@@ -43,6 +43,8 @@
               <td>{% if row.status == "complete" %}Completo{% elif row.status == "pending" %}Pendiente{% else %}No disponible{% endif %}</td>
               <td><strong>{{ row.score_final|floatformat:1 }}</strong></td>
               <td>{% if row.v8_score != None %}{{ row.v8_score|floatformat:1 }}{% else %}—{% endif %}</td>
+              <td>{% if row.market_support_index != None %}{{ row.market_support_index|floatformat:3 }}{% else %}—{% endif %}</td>
+              <td>{% if row.total_penalty != None %}-{{ row.total_penalty|floatformat:1 }}{% else %}—{% endif %}</td>
               <td>{% if row.home_n != None %}{{ row.home_n }}{% else %}—{% endif %}</td>
               <td>{% if row.home_over25 != None %}{{ row.home_over25|floatformat:3 }}{% else %}—{% endif %}</td>
               <td>{% if row.away_n != None %}{{ row.away_n }}{% else %}—{% endif %}</td>
@@ -61,14 +63,14 @@
                 {% endif %}
               </td>
             </tr>
-            {% empty %}<tr><td colspan="12" class="empty">No hay Premium vigentes con Deep Analysis completo. Ejecuta Generar Picks Premium.</td></tr>{% endfor %}
+            {% empty %}<tr><td colspan="14" class="empty">No hay Premium vigentes con Deep Analysis completo. Ejecuta Generar Picks Premium.</td></tr>{% endfor %}
           </tbody>
         </table>
       </div>
     </section>
 
     <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">SPRINT 6.7–7.0</p><h2>Embudo del modelo</h2></div><span class="count-badge">{{ model_diagnostics.target_date|date:"d/m/Y" }}</span></div>
+      <div class="panel-head"><div><p class="eyebrow">SPRINT 6.7–7.1</p><h2>Embudo del modelo</h2></div><span class="count-badge">{{ model_diagnostics.target_date|date:"d/m/Y" }}</span></div>
       <div class="metrics-grid developer-metrics">
         {% for row in model_diagnostics.funnel %}
         <article class="metric-card"><span>{{ row.label }}</span><strong>{{ row.count }}</strong><small>etapa del filtro Premium</small></article>
