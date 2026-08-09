@@ -10,6 +10,11 @@ from django.utils import timezone
 from .competition_quality import classify_competition
 from .deep_analysis import DEEP_ANALYSIS_VERSION
 from .models import DailyPremiumSelection, Prediction
+from .probability_calibration import (
+    PREMIUM_MIN_RELIABILITY,
+    TIER_A_MIN_RELIABILITY,
+    ProbabilityEVCalibrationService,
+)
 from .score_v8 import V8_MODEL_VERSION
 from .value_policy import (
     PREMIUM_MIN_EV,
@@ -26,20 +31,23 @@ class TierRule:
     min_ev: float
     min_btts_probability: float
     min_over25_probability: float
+    min_reliability: float
 
 
-# Premium operativo queda deliberadamente limitado a Tier A / Tier B.
-# A exige EV >= 8%; B admite EV >= 3% siempre que el resto del perfil sea sólido.
+# Sprint 7.3: probability/EV used by Premium are calibrated, not raw.
+# EV thresholds apply to reliable_ev, so weak evidence cannot manufacture value.
 TIER_RULES = (
-    TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.63, 0.65),
-    TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.59, 0.61),
+    TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.63, 0.65, TIER_A_MIN_RELIABILITY),
+    TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.59, 0.61, PREMIUM_MIN_RELIABILITY),
 )
 
 DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0)
 
 
 class DailyPremiumSelector:
-    """Select at most one Deep-validated Premium Value market per fixture and three picks per day."""
+    """Select at most one Deep-validated, probability-calibrated Premium Value market per fixture."""
+
+    calibrator = ProbabilityEVCalibrationService()
 
     def __init__(self, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
         self.model_version = model_version
@@ -69,10 +77,14 @@ class DailyPremiumSelector:
             return False
         if prediction.market_odds is None or prediction.edge is None or prediction.expected_value is None:
             return False
-        # Hard gate: low odds can never displace a real Premium Value candidate.
         if not is_premium_value_odds(prediction.market_odds):
             return False
-        probability = float(prediction.probability)
+
+        calibration = cls.calibrator.calibrate(prediction)
+        if not calibration.premium_reliable:
+            return False
+
+        probability = calibration.calibrated_probability
         if prediction.market == "BTTS":
             if probability < 0.59:
                 return False
@@ -81,16 +93,23 @@ class DailyPremiumSelector:
                 return False
         else:
             return False
-        return float(prediction.edge) >= 0.05 and float(prediction.expected_value) >= float(PREMIUM_MIN_EV)
+
+        return (
+            calibration.calibrated_edge >= 0.05
+            and calibration.reliable_ev >= float(PREMIUM_MIN_EV)
+        )
 
     @classmethod
     def _tier_for(cls, prediction: Prediction, *, score_floor: float = 84.0) -> str | None:
         if not cls._passes_hard_value_floors(prediction):
             return None
-        probability = float(prediction.probability)
+
+        calibration = cls.calibrator.calibrate(prediction)
+        probability = calibration.calibrated_probability
         score = float(prediction.score)
-        edge = float(prediction.edge)
-        ev = float(prediction.expected_value)
+        edge = calibration.calibrated_edge
+        ev = calibration.reliable_ev
+
         for rule in TIER_RULES:
             effective_score = rule.min_score
             if rule.name == "B":
@@ -100,25 +119,27 @@ class DailyPremiumSelector:
                 and edge >= rule.min_edge
                 and ev >= rule.min_ev
                 and probability >= cls._probability_floor(rule, prediction.market)
+                and calibration.reliability >= rule.min_reliability
             ):
                 return rule.name
         return None
 
     @classmethod
     def _rank_score(cls, prediction: Prediction) -> tuple[float, dict]:
+        calibration = cls.calibrator.calibrate(prediction)
         score_component = max(0.0, min(float(prediction.score), 100.0))
-        probability_component = max(0.0, min(float(prediction.probability), 1.0)) * 100.0
-        ev = max(0.0, float(prediction.expected_value or 0))
-        edge = max(0.0, float(prediction.edge or 0))
-        ev_component = min(ev / 0.25, 1.0) * 100.0
-        edge_component = min(edge / 0.15, 1.0) * 100.0
-        # EV is now the dominant ranking component. A high probability at 1.40
-        # cannot enter this function because the hard odds gate runs first.
+        probability_component = calibration.calibrated_probability * 100.0
+        ev_component = min(max(0.0, calibration.reliable_ev) / 0.20, 1.0) * 100.0
+        edge_component = min(max(0.0, calibration.calibrated_edge) / 0.12, 1.0) * 100.0
+        reliability_component = calibration.reliability_score
+
+        # Sprint 7.3: reliable EV dominates; raw probability/EV no longer rank directly.
         composite = (
-            0.25 * score_component
-            + 0.35 * ev_component
-            + 0.25 * edge_component
-            + 0.15 * probability_component
+            0.22 * score_component
+            + 0.30 * ev_component
+            + 0.20 * edge_component
+            + 0.13 * probability_component
+            + 0.15 * reliability_component
         )
         reasons = prediction.reasons or {}
         rationale = {
@@ -126,16 +147,23 @@ class DailyPremiumSelector:
             "probability_component": round(probability_component, 2),
             "ev_component": round(ev_component, 2),
             "edge_component": round(edge_component, 2),
+            "reliability_component": round(reliability_component, 2),
             "deep_analysis_version": reasons.get("deep_analysis_version"),
             "deep_analysis_evidence": reasons.get("deep_analysis_evidence") or {},
             "deep_analysis_warnings": reasons.get("deep_analysis_warnings") or [],
             "deep_score": reasons.get("deep_score"),
-            "probability": float(prediction.probability),
+            "probability_calibration": calibration.as_dict(),
+            "raw_probability": calibration.raw_probability,
+            "calibrated_probability": calibration.calibrated_probability,
             "market_odds": float(prediction.market_odds) if prediction.market_odds is not None else None,
-            "edge": float(prediction.edge) if prediction.edge is not None else None,
-            "expected_value": float(prediction.expected_value) if prediction.expected_value is not None else None,
+            "raw_edge": calibration.raw_edge,
+            "calibrated_edge": calibration.calibrated_edge,
+            "raw_expected_value": calibration.raw_ev,
+            "calibrated_expected_value": calibration.calibrated_ev,
+            "reliable_expected_value": calibration.reliable_ev,
+            "probability_reliability": calibration.reliability,
             "odds_policy": "Premium Value 1.60-2.40",
-            "formula": "0.25*deep_score + 0.35*ev + 0.25*edge + 0.15*probability",
+            "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*calibrated_probability + 0.15*reliability",
         }
         return round(composite, 2), rationale
 
@@ -157,7 +185,7 @@ class DailyPremiumSelector:
             key=lambda item: (
                 tier_priority[item[1]],
                 item[2],
-                float(item[0].expected_value or 0),
+                float(item[3].get("reliable_expected_value") or 0),
                 float(item[0].score),
             ),
             reverse=True,
