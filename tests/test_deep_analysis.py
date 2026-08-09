@@ -80,8 +80,44 @@ class DeepAnalysisTests(TestCase):
         self.assertEqual(reasons["deep_home_n"], 10)
         self.assertEqual(reasons["deep_home_over25"], 0.2)
         self.assertIn("home_over25_deep_low", reasons["deep_analysis_warnings"])
+        self.assertGreater(evidence["side_consistency_penalty"], 0)
         self.assertLess(float(over.score), 94.0)
         self.assertEqual(float(over.score), float(canonical["score"]))
+
+    def test_concepcion_like_profile_is_warned_and_falls_below_premium_floor(self):
+        # Local: 4/10 Over; away: 9/10 Over. A very strong away trend must not
+        # erase the weak home venue evidence.
+        self._history(team=self.home, venue="home", overs=[True] * 4 + [False] * 6)
+        self._history(team=self.away, venue="away", overs=[True] * 9 + [False])
+        over = self._prediction("OVER_2_5", score=100, ev=.41, edge=.20, probability=.69)
+        self._prediction("BTTS", score=92, ev=.18, edge=.10, probability=.66)
+
+        DeepMatchAnalysisService().analyze_fixture(self.target)
+        over.refresh_from_db()
+        evidence = over.reasons["deep_analysis_evidence"]
+
+        self.assertEqual(evidence["home_over25_rate"], 0.4)
+        self.assertEqual(evidence["away_over25_rate"], 0.9)
+        self.assertIn("home_over25_deep_low", over.reasons["deep_analysis_warnings"])
+        self.assertGreater(evidence["side_consistency_penalty"], 0)
+        self.assertLess(float(over.score), 84.0)
+
+    def test_barinas_like_profile_keeps_strong_deep_score(self):
+        self._history(team=self.home, venue="home", overs=[True] * 10)
+        self._history(team=self.away, venue="away", overs=[True] * 7 + [False] * 3)
+        over = self._prediction("OVER_2_5", score=100, ev=.20, edge=.12, probability=.72)
+        self._prediction("BTTS", score=90, ev=.10, edge=.08, probability=.65)
+
+        DeepMatchAnalysisService().analyze_fixture(self.target)
+        over.refresh_from_db()
+        evidence = over.reasons["deep_analysis_evidence"]
+
+        self.assertEqual(evidence["home_over25_rate"], 1.0)
+        self.assertEqual(evidence["away_over25_rate"], 0.7)
+        self.assertGreaterEqual(evidence["market_support_index"], 0.8)
+        self.assertEqual(evidence["side_consistency_penalty"], 0.0)
+        self.assertEqual(evidence["market_support_penalty"], 0.0)
+        self.assertGreaterEqual(float(over.score), 88.0)
 
     def test_only_one_market_is_marked_preferred(self):
         self._history(team=self.home, venue="home", overs=[True] * 8 + [False] * 2)
