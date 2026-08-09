@@ -72,18 +72,32 @@ def _merge_quotes(current: dict[str, MarketQuote | None], incoming: dict[str, Ma
     }
 
 
+def _best_coverage_quotes(payload: list[dict], preferred_name: str) -> dict[str, MarketQuote | None]:
+    best_quotes = {"btts": None, "over25": None}
+    best_coverage = -1
+    for bookmaker in _candidate_bookmakers(payload):
+        if _normalize(bookmaker.get("name", "")) == preferred_name:
+            continue
+        quotes = _quotes_from_bookmaker(bookmaker)
+        coverage = int(quotes["btts"] is not None) + int(quotes["over25"] is not None)
+        if coverage > best_coverage:
+            best_quotes = quotes
+            best_coverage = coverage
+    return best_quotes
+
+
 def parse_quotes(
     payload: list[dict],
     preferred_bookmaker: str | None = None,
     *,
-    allow_fallback: bool = True,
+    allow_fallback: bool = False,
 ) -> dict[str, MarketQuote | None]:
-    """Parse BTTS/Over 2.5 quotes with independent market fallback.
+    """Parse BTTS/Over 2.5 quotes with strict preferred-bookmaker default.
 
-    Multiple records for the same preferred bookmaker are merged. Production
-    defaults to fallback enabled so a missing Betano market can be completed by
-    another real bookmaker rather than leaving the candidate unrankable. Pass
-    ``allow_fallback=False`` only for strict diagnostics.
+    Production enrichment opts into fallback explicitly. If the preferred book
+    is absent, fallback chooses the bookmaker covering the most target markets.
+    If the preferred book has only one target market, fallback fills only the
+    missing market, preserving the preferred quote where it exists.
     """
     quotes = {"btts": None, "over25": None}
     preferred_rows = _preferred_bookmakers(payload, preferred_bookmaker)
@@ -96,10 +110,5 @@ def parse_quotes(
         return quotes
 
     preferred_name = _normalize(preferred_bookmaker or os.getenv("PREFERRED_BOOKMAKER", "Betano"))
-    for bookmaker in _candidate_bookmakers(payload):
-        if _normalize(bookmaker.get("name", "")) == preferred_name:
-            continue
-        quotes = _merge_quotes(quotes, _quotes_from_bookmaker(bookmaker))
-        if quotes["btts"] is not None and quotes["over25"] is not None:
-            break
-    return quotes
+    fallback_quotes = _best_coverage_quotes(payload, preferred_name)
+    return _merge_quotes(quotes, fallback_quotes)
