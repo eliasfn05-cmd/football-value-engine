@@ -9,6 +9,7 @@ from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from engine.model_diagnostics import ModelDiagnosticsService
 from engine.models import DailyPremiumSelection, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
 from scanner.models import PremiumGenerationJob
@@ -43,12 +44,6 @@ def _expire_stale_generation_jobs() -> None:
 
 
 def _interactive_pipeline_mode(target_date) -> str:
-    """Prefer a selective refresh when today's base score already exists.
-
-    The scheduled morning pipeline discovers and scores the full card. Repeating
-    that work from the dashboard only adds latency. If no V8 predictions exist
-    for the requested date, fall back to full so the button remains self-healing.
-    """
     start = timezone.make_aware(datetime.combine(target_date, dt_time.min))
     end = start + timedelta(days=1)
     exists = Prediction.objects.filter(
@@ -60,11 +55,7 @@ def _interactive_pipeline_mode(target_date) -> str:
 
 
 def health(request):
-    return JsonResponse({
-        "status": "ok",
-        "service": "football-value-engine",
-        "version": "1.0.0",
-    })
+    return JsonResponse({"status": "ok", "service": "football-value-engine", "version": "1.0.0"})
 
 
 def dashboard_home(request):
@@ -83,6 +74,7 @@ def dashboard_home(request):
 
 def developer_dashboard(request):
     context = DashboardService().build_developer()
+    context["model_diagnostics"] = ModelDiagnosticsService().build()
     return render(request, "dashboard/developer.html", context)
 
 
@@ -92,35 +84,24 @@ def generate_premium_picks(request):
     expected_pin = os.getenv("PIPELINE_TRIGGER_PIN", "").strip()
     if not expected_pin:
         return JsonResponse({"ok": False, "message": "PIPELINE_TRIGGER_PIN no está configurado en Render."}, status=503)
-
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except (ValueError, UnicodeDecodeError):
         return JsonResponse({"ok": False, "message": "Solicitud inválida."}, status=400)
-
     supplied_pin = str(payload.get("pin") or "").strip()
     if not hmac.compare_digest(supplied_pin, expected_pin):
         return JsonResponse({"ok": False, "message": "PIN incorrecto."}, status=403)
-
     target_date = timezone.localdate()
     active_job = PremiumGenerationJob.objects.filter(
         target_date=target_date,
         status__in=PremiumGenerationJob.ACTIVE_STATUSES,
     ).first()
     if active_job:
-        return JsonResponse({
-            "ok": True,
-            "already_running": True,
-            "message": "Ya hay una generación en curso.",
-            "job_id": active_job.id,
-            "target_date": active_job.target_date.isoformat(),
-        })
-
+        return JsonResponse({"ok": True, "already_running": True, "message": "Ya hay una generación en curso.", "job_id": active_job.id, "target_date": active_job.target_date.isoformat()})
     now_ts = time.time()
     last_trigger = float(request.session.get("premium_trigger_ts", 0) or 0)
     if now_ts - last_trigger < 45:
         return JsonResponse({"ok": False, "message": "Espera unos segundos antes de volver a generar."}, status=429)
-
     mode = _interactive_pipeline_mode(target_date)
     job = PremiumGenerationJob.objects.create(
         target_date=target_date,
@@ -131,11 +112,7 @@ def generate_premium_picks(request):
         message="Solicitud creada; enviando al worker.",
         metadata={"source": "dashboard", "interactive_fast": True, "resolved_mode": mode},
     )
-    result = GitHubPipelineTrigger().dispatch(
-        target_date=target_date,
-        mode=mode,
-        generation_job_id=job.id,
-    )
+    result = GitHubPipelineTrigger().dispatch(target_date=target_date, mode=mode, generation_job_id=job.id)
     if not result.accepted:
         job.status = PremiumGenerationJob.STATUS_FAILED
         job.current_stage = "DISPATCH"
@@ -144,7 +121,6 @@ def generate_premium_picks(request):
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "current_stage", "progress_pct", "message", "finished_at"])
         return JsonResponse({"ok": False, "message": result.message, "job_id": job.id}, status=502)
-
     job.status = PremiumGenerationJob.STATUS_DISPATCHED
     job.current_stage = "QUEUE"
     job.progress_pct = 1
@@ -152,13 +128,7 @@ def generate_premium_picks(request):
     job.dispatched_at = timezone.now()
     job.save(update_fields=["status", "current_stage", "progress_pct", "message", "dispatched_at"])
     request.session["premium_trigger_ts"] = now_ts
-    return JsonResponse({
-        "ok": True,
-        "message": result.message,
-        "job_id": job.id,
-        "target_date": target_date.isoformat(),
-        "mode": mode,
-    })
+    return JsonResponse({"ok": True, "message": result.message, "job_id": job.id, "target_date": target_date.isoformat(), "mode": mode})
 
 
 @require_GET
@@ -175,37 +145,13 @@ def premium_generation_status(request):
         job = PremiumGenerationJob.objects.select_related("pipeline").first()
     if job is None:
         return JsonResponse({"ok": True, "job": None, "premium_count": 0, "stages": []})
-
     stages = []
     if job.pipeline_id:
-        stages = [
-            {
-                "name": stage.name,
-                "status": stage.status,
-                "message": stage.message,
-                "duration_seconds": stage.duration_seconds,
-                "records_processed": stage.records_processed,
-            }
-            for stage in job.pipeline.stages.all()
-        ]
-
-    premium_count = DailyPremiumSelection.objects.filter(
-        target_date=job.target_date,
-        prediction__fixture__kickoff__gte=timezone.now(),
-    ).count()
+        stages = [{"name": stage.name, "status": stage.status, "message": stage.message, "duration_seconds": stage.duration_seconds, "records_processed": stage.records_processed} for stage in job.pipeline.stages.all()]
+    premium_count = DailyPremiumSelection.objects.filter(target_date=job.target_date, prediction__fixture__kickoff__gte=timezone.now()).count()
     return JsonResponse({
         "ok": True,
-        "job": {
-            "id": job.id,
-            "status": job.status,
-            "target_date": job.target_date.isoformat(),
-            "current_stage": job.current_stage,
-            "progress_pct": job.progress_pct,
-            "message": job.message,
-            "pipeline_id": job.pipeline_id,
-            "finished": job.finished_at is not None,
-            "mode": job.mode,
-        },
+        "job": {"id": job.id, "status": job.status, "target_date": job.target_date.isoformat(), "current_stage": job.current_stage, "progress_pct": job.progress_pct, "message": job.message, "pipeline_id": job.pipeline_id, "finished": job.finished_at is not None, "mode": job.mode},
         "premium_count": premium_count,
         "stages": stages,
     })
