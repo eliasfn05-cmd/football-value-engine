@@ -30,7 +30,9 @@ class DailyPipeline:
     """Production orchestrator for the football-value workflow."""
 
     MODES = {"full", "morning", "refresh", "settlement", "detailed"}
-    INTERACTIVE_POOL_LIMIT = 16
+    # Sprint 7.4: enrichment and rescore must use the same broad professional
+    # universe; otherwise a 40-fixture odds sweep could still rescore only 16.
+    INTERACTIVE_POOL_LIMIT = 40
     DEEP_ANALYSIS_LIMIT = 200
 
     def __init__(self, *, max_attempts: int = 3, retry_delay_seconds: float = 1.0):
@@ -95,7 +97,7 @@ class DailyPipeline:
         limit = self.INTERACTIVE_POOL_LIMIT if self._interactive_fast_enabled() else 30
         fixture_ids = self._future_candidate_fixture_ids(target_date, limit=limit)
         self._run_command("enrich_candidates", target_date=target_date.isoformat(), limit=limit, min_score=50.0)
-        mode = "high-recall" if self._interactive_fast_enabled() else "standard"
+        mode = "professional-expanded" if self._interactive_fast_enabled() else "standard"
         return StageResult(len(fixture_ids), f"{len(fixture_ids)} future shortlisted fixtures enriched ({mode})", {"candidates": len(fixture_ids), "pool_mode": mode, "fixture_ids": fixture_ids})
 
     def _rescore_enriched(self, target_date: date) -> StageResult:
@@ -111,8 +113,6 @@ class DailyPipeline:
         return StageResult(rescored, f"{rescored} enriched future fixtures rescored; {premium} raw tier-A", {"rescored": rescored, "raw_tier_a": premium, "fixture_ids": fixture_ids})
 
     def _deep_analysis(self, target_date: date) -> StageResult:
-        # No fixed six-fixture bottleneck. Every currently Premium-Value-eligible
-        # fixture must finish Deep Analysis before SELECT_PREMIUM is allowed.
         pool = high_recall_candidate_pool(target_date, rule=CandidatePoolRule(limit=self.DEEP_ANALYSIS_LIMIT, require_premium_value_odds=True))
         required_fixture_ids = [entry.fixture_id for entry in pool]
         required_count = len(required_fixture_ids)
@@ -123,10 +123,6 @@ class DailyPipeline:
         analyzed = Prediction.objects.filter(model_version=V8_MODEL_VERSION, fixture__kickoff__gte=future_start, fixture__kickoff__lt=end, reasons__deep_analysis_version=DEEP_ANALYSIS_VERSION)
         analyzed_fixture_ids=set(analyzed.values_list("fixture_id",flat=True))
         pending_fixture_ids=[fid for fid in required_fixture_ids if fid not in analyzed_fixture_ids]
-
-        # Fail closed: a pipeline can never silently proceed with a Premium Value
-        # candidate still waiting for Deep Analysis. Retry once on the exact
-        # current candidate count; if anything remains, raise and block selection.
         if pending_fixture_ids:
             self._run_command("deep_analyze_candidates", target_date=target_date.isoformat(), limit=required_count)
             analyzed = Prediction.objects.filter(model_version=V8_MODEL_VERSION, fixture__kickoff__gte=future_start, fixture__kickoff__lt=end, reasons__deep_analysis_version=DEEP_ANALYSIS_VERSION)
@@ -184,7 +180,6 @@ class DailyPipeline:
         pipeline,generation_job=self._create_run(target_date,mode,generation_job_id); started=timezone.now(); stages=self._stages_for(target_date,mode); required_failed=False; ingest_failed=False; warning_count=0; error_count=0; dependent_on_ingest={"SCORE_V8","ENRICH_CANDIDATES","RESCORE_V8","DEEP_ANALYSIS","SELECT_PREMIUM"}
         for index,(name,fn,required) in enumerate(stages,start=1):
             self._sync_generation_job(generation_job,current_stage=name,progress_pct=max(2,int(((index-1)/max(1,len(stages)))*95)),message=f"Ejecutando {name}…")
-            # Selection also depends on a successful Deep stage, not only ingest.
             if (name in dependent_on_ingest and ingest_failed) or (name=="SELECT_PREMIUM" and required_failed):
                 PipelineStageRun.objects.create(pipeline=pipeline,name=name,status=PipelineStageRun.STATUS_WARNING,attempt_count=0,finished_at=timezone.now(),message="skipped because required dependency failed",details={"dependency":"INGEST_OR_DEEP"}); warning_count+=1
             else:
