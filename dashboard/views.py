@@ -12,6 +12,7 @@ from django.views.decorators.http import require_GET, require_POST
 from engine.model_diagnostics import ModelDiagnosticsService
 from engine.models import DailyPremiumSelection, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
+from engine.value_policy import PREMIUM_MIN_EV, PREMIUM_VALUE_MAX_ODDS, PREMIUM_VALUE_MIN_ODDS
 from scanner.models import PremiumGenerationJob
 
 from .pipeline_trigger import GitHubPipelineTrigger
@@ -150,7 +151,14 @@ def premium_generation_status(request):
     stages = []
     if job.pipeline_id:
         stages = [{"name": stage.name, "status": stage.status, "message": stage.message, "duration_seconds": stage.duration_seconds, "records_processed": stage.records_processed} for stage in job.pipeline.stages.all()]
-    premium_count = DailyPremiumSelection.objects.filter(target_date=job.target_date, prediction__fixture__kickoff__gte=timezone.now()).count()
+    premium_count = DailyPremiumSelection.objects.filter(
+        target_date=job.target_date,
+        model_version=V8_MODEL_VERSION,
+        prediction__fixture__kickoff__gte=timezone.now(),
+        prediction__market_odds__gte=PREMIUM_VALUE_MIN_ODDS,
+        prediction__market_odds__lte=PREMIUM_VALUE_MAX_ODDS,
+        prediction__expected_value__gte=PREMIUM_MIN_EV,
+    ).count()
     return JsonResponse({
         "ok": True,
         "job": {"id": job.id, "status": job.status, "target_date": job.target_date.isoformat(), "current_stage": job.current_stage, "progress_pct": job.progress_pct, "message": job.message, "pipeline_id": job.pipeline_id, "finished": job.finished_at is not None, "mode": job.mode},
