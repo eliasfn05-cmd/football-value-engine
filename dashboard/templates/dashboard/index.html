@@ -13,7 +13,7 @@
       <div>
         <p class="eyebrow">FOOTBALL VALUE ENGINE</p>
         <h1>Premium Picks</h1>
-        <p class="subtitle">Sprint 6 · Ranking diario · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
+        <p class="subtitle">Sprint 7.0 · Deep Match Analysis · actualizado {{ generated_at|date:"d/m/Y H:i" }}</p>
       </div>
       <div class="hero-actions">
         <form id="premium-generator-form">{% csrf_token %}
@@ -60,7 +60,7 @@
             <div><small>Cuota</small><strong>{% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %}</strong></div>
             <div><small>Edge</small><strong>{% if pick.edge != None %}{{ pick.edge|floatformat:3 }}{% else %}—{% endif %}</strong></div>
             <div><small>EV</small><strong>{% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>Score V8</small><strong>{{ pick.score|floatformat:1 }}</strong></div>
+            <div><small>Score final</small><strong>{{ pick.score|floatformat:1 }}</strong></div>
           </div>
           <div class="kickoff">Inicio: {{ pick.fixture.kickoff|date:"d/m/Y H:i" }}</div>
         </article>
@@ -70,23 +70,23 @@
     {% else %}
     <section class="no-bet-card">
       <div class="no-bet-icon">—</div>
-      <div><p class="eyebrow">DECISIÓN DEL MODELO</p><h2>NO BET</h2><p>Ninguna predicción superó el piso mínimo del ranking Sprint 6. El sistema no publicará picks por obligación.</p></div>
+      <div><p class="eyebrow">DECISIÓN DEL MODELO</p><h2>NO BET</h2><p>Ninguna predicción superó todas las validaciones de Sprint 7.0. El sistema no publicará picks por obligación.</p></div>
     </section>
     {% endif %}
 
     <section class="metrics-grid history-metrics">
       <article class="metric-card"><span>Win Rate</span><strong>{% if metrics.win_rate_pct != None %}{{ metrics.win_rate_pct }}%{% else %}—{% endif %}</strong><small>{{ metrics.wins }}W · {{ metrics.losses }}L · n={{ metrics.sample_size }}</small></article>
-      <article class="metric-card"><span>ROI</span><strong>{% if metrics.roi_pct != None %}{{ metrics.roi_pct }}%{% else %}—{% endif %}</strong><small>Sobre picks Sprint 6 liquidados</small></article>
+      <article class="metric-card"><span>ROI</span><strong>{% if metrics.roi_pct != None %}{{ metrics.roi_pct }}%{% else %}—{% endif %}</strong><small>Sobre picks Premium liquidados</small></article>
       <article class="metric-card"><span>Yield</span><strong>{% if metrics.yield_pct != None %}{{ metrics.yield_pct }}%{% else %}—{% endif %}</strong><small>Rendimiento por unidad</small></article>
       <article class="metric-card"><span>Profit</span><strong>{{ metrics.profit_units|floatformat:2 }} u</strong><small>Solo selecciones operativas</small></article>
     </section>
 
     <section class="panel">
       <div class="panel-head"><div><p class="eyebrow">HISTÓRICO</p><h2>Últimos resultados Premium</h2></div></div>
-      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Pick</th><th>Marcador</th><th>Cuota</th><th>Resultado</th><th>P/L</th></tr></thead><tbody>{% for row in recent_results %}<tr><td>{{ row.prediction.fixture.home_team.name }} vs {{ row.prediction.fixture.away_team.name }}</td><td>{{ row.prediction.market }} · {{ row.prediction.selection }}</td><td>{{ row.home_goals }}-{{ row.away_goals }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td><span class="result result-{{ row.result|lower }}">{{ row.result }}</span></td><td><strong>{{ row.profit_units|floatformat:2 }} u</strong></td></tr>{% empty %}<tr><td colspan="6" class="empty">Aún no hay picks Sprint 6 liquidados.</td></tr>{% endfor %}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Pick</th><th>Marcador</th><th>Cuota</th><th>Resultado</th><th>P/L</th></tr></thead><tbody>{% for row in recent_results %}<tr><td>{{ row.prediction.fixture.home_team.name }} vs {{ row.prediction.fixture.away_team.name }}</td><td>{{ row.prediction.market }} · {{ row.prediction.selection }}</td><td>{{ row.home_goals }}-{{ row.away_goals }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td><span class="result result-{{ row.result|lower }}">{{ row.result }}</span></td><td><strong>{{ row.profit_units|floatformat:2 }} u</strong></td></tr>{% empty %}<tr><td colspan="6" class="empty">Aún no hay picks Premium liquidados.</td></tr>{% endfor %}</tbody></table></div>
     </section>
 
-    <footer>Football Value Engine · Ranking Sprint 6: máximo 3 picks, un mercado por partido y partidos oficiales únicamente.</footer>
+    <footer>Football Value Engine · Sprint 7.0: máximo 3 picks, un mercado Deep-validado por partido y competiciones oficiales únicamente.</footer>
   </main>
 
   <script>
