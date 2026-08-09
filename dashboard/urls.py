@@ -11,7 +11,9 @@ from .views import (
 urlpatterns = [
     path("health/", health, name="health"),
     path("dashboard/", dashboard_home, name="dashboard-home"),
+    path("dashboard/developer/", developer_dashboard, name="developer-dashboard"),
     path("dashboard/generate-premium/", generate_premium_picks, name="generate-premium-picks"),
     path("dashboard/generation-status/", premium_generation_status, name="premium-generation-status"),
-    path("developer/", developer_dashboard, name="developer-dashboard"),
+    # Backwards-compatible alias kept temporarily.
+    path("developer/", developer_dashboard, name="developer-dashboard-legacy"),
 ]
