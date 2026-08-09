@@ -90,16 +90,18 @@ class ProbabilityEVCalibrationService:
     def _reliability(reasons: dict[str, Any]) -> tuple[float, float, float, float, float]:
         evidence = reasons.get("deep_analysis_evidence") or {}
 
-        support = _float(evidence.get("market_support_index"), 0.50)
+        # Neutral defaults preserve compatibility with already deep-validated rows
+        # created before Sprint 7.3 while real Sprint 7.2 evidence overrides them.
+        support = _float(evidence.get("market_support_index"), 0.62)
         support_conf = _clamp((support - 0.45) / 0.35)
 
-        coverage = _clamp(_float(evidence.get("sample_coverage"), 0.50))
+        coverage = _clamp(_float(evidence.get("sample_coverage"), 0.70))
 
-        data_quality = _clamp(_float(reasons.get("data_quality_score"), 65.0) / 100.0)
+        data_quality = _clamp(_float(reasons.get("data_quality_score"), 75.0) / 100.0)
         venue_conf = _clamp(_float(reasons.get("venue_sample_confidence"), coverage))
         quality_conf = 0.65 * data_quality + 0.35 * venue_conf
 
-        total_penalty = max(0.0, _float(evidence.get("total_deep_penalty"), 8.0))
+        total_penalty = max(0.0, _float(evidence.get("total_deep_penalty"), 0.0))
         penalty_conf = _clamp(1.0 - total_penalty / 24.0)
 
         reliability = (
