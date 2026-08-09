@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 
 from django.utils import timezone
@@ -12,6 +13,7 @@ from .deep_analysis import DEEP_ANALYSIS_VERSION
 from .models import Prediction
 from .premium_selection import DailyPremiumSelector
 from .score_v8 import V8_MODEL_VERSION
+from .value_policy import PREMIUM_MIN_EV, PREMIUM_VALUE_MAX_ODDS, odds_band
 
 
 FAILURE_LABELS = {
@@ -36,9 +38,12 @@ FAILURE_LABELS = {
     "home_clean_sheet_high": "Local mantiene portería a cero con frecuencia",
     "h2h_btts_low": "H2H BTTS bajo",
     "competition_btts_low": "Competición con BTTS bajo",
-    "missing_market_odds": "Sin cuota de mercado",
+    "missing_market_odds": "Pendiente de cuota",
+    "premium_safe_odds": "Premium Safe: cuota 1.30-1.59; no compite por Top 3",
+    "odds_above_premium_max": "Cuota > 2.40; fuera de Premium Value",
+    "odds_below_safe_floor": "Cuota < 1.30; descartado",
     "edge_below_premium_floor": "Edge por debajo de 5%",
-    "ev_below_premium_floor": "EV por debajo de 6%",
+    "ev_below_premium_floor": "EV por debajo de 3%",
     "probability_below_premium_floor": "Probabilidad por debajo del piso Premium",
     "score_below_dynamic_floor": "Score final por debajo del piso dinámico 80",
     "deep_analysis_pending": "Deep Analysis pendiente/no disponible",
@@ -53,7 +58,7 @@ FAILURE_LABELS = {
 
 
 class ModelDiagnosticsService:
-    """Explain the real sequential Premium funnel, including Sprint 7.0."""
+    """Explain the sequential Premium Value funnel and keep low-odds rejections separate."""
 
     def __init__(self, model_version: str = V8_MODEL_VERSION):
         self.model_version = model_version
@@ -93,6 +98,39 @@ class ModelDiagnosticsService:
             "failures": reasons.get("deep_analysis_failures") or [],
         }
 
+    def _reason_code(self, prediction: Prediction) -> str:
+        reasons = prediction.reasons or {}
+        failures = list(reasons.get("v8_gate_failures") or [])
+        if failures:
+            return failures[0]
+        if prediction.market_odds is None:
+            return "missing_market_odds"
+        band = odds_band(prediction.market_odds)
+        if band == "PREMIUM_SAFE":
+            return "premium_safe_odds"
+        if band == "OUTSIDE":
+            if Decimal(str(prediction.market_odds)) > PREMIUM_VALUE_MAX_ODDS:
+                return "odds_above_premium_max"
+            return "odds_below_safe_floor"
+        if prediction.expected_value is None or Decimal(str(prediction.expected_value)) < PREMIUM_MIN_EV:
+            return "ev_below_premium_floor"
+
+        deep = self._deep_state(prediction)
+        if deep.get("status") != "complete":
+            return "deep_analysis_pending"
+        if deep.get("passed") is False:
+            deep_failures = list(deep.get("failures") or [])
+            return deep_failures[0] if deep_failures else "deep_analysis_rejected"
+        if deep.get("preferred_market") is False:
+            return "deep_market_not_preferred"
+        if not self._probability_ok(prediction):
+            return "probability_below_premium_floor"
+        if prediction.edge is None or float(prediction.edge) < 0.05:
+            return "edge_below_premium_floor"
+        if float(prediction.score) < 80.0:
+            return "score_below_dynamic_floor"
+        return "premium_threshold_combination"
+
     def build(self, target_date=None, *, top_rejected: int = 5) -> dict[str, Any]:
         target_date = target_date or timezone.localdate()
         start, end = self._bounds(target_date)
@@ -116,21 +154,22 @@ class ModelDiagnosticsService:
         official_ids = {p.id for p in official}
         discovery_pool = high_recall_candidate_pool(
             target_date,
-            rule=CandidatePoolRule(limit=60),
+            rule=CandidatePoolRule(limit=60, require_premium_value_odds=True),
             model_version=self.model_version,
         )
         pool_prediction_ids = {entry.prediction_id for entry in discovery_pool}
         pool_predictions = [p for p in official if p.id in pool_prediction_ids]
 
         hard_data_pass = []
+        value_quoted_pass = []
         confidence_pass = []
         intelligence_pass = []
         deep_complete = []
         deep_preferred = []
-        value_pass = []
         premium_eligible = []
         rejection_counter: Counter[str] = Counter()
         rejected_rows: list[dict[str, Any]] = []
+        odds_rejected_rows: list[dict[str, Any]] = []
 
         for prediction in pool_predictions:
             reasons = prediction.reasons or {}
@@ -139,6 +178,12 @@ class ModelDiagnosticsService:
             if hard_data_failures:
                 continue
             hard_data_pass.append(prediction)
+
+            if odds_band(prediction.market_odds) != "PREMIUM_VALUE":
+                continue
+            if prediction.expected_value is None or Decimal(str(prediction.expected_value)) < PREMIUM_MIN_EV:
+                continue
+            value_quoted_pass.append(prediction)
 
             if reasons.get("market_confidence_passed") is not True:
                 continue
@@ -156,10 +201,6 @@ class ModelDiagnosticsService:
                 continue
             deep_preferred.append(prediction)
 
-            if not DailyPremiumSelector._passes_hard_value_floors(prediction):
-                continue
-            value_pass.append(prediction)
-
             if DailyPremiumSelector._tier_for(prediction, score_floor=80.0) is not None:
                 premium_eligible.append(prediction)
 
@@ -167,34 +208,13 @@ class ModelDiagnosticsService:
             if DailyPremiumSelector._tier_for(prediction, score_floor=80.0) is not None:
                 continue
             reasons = prediction.reasons or {}
-            failures = list(reasons.get("v8_gate_failures") or [])
             soft_warnings = list(reasons.get("v8_soft_warnings") or [])
             deep = self._deep_state(prediction)
-            if failures:
-                main = failures[0]
-            elif deep.get("status") != "complete":
-                main = "deep_analysis_pending"
-            elif deep.get("passed") is False:
-                deep_failures = list(deep.get("failures") or [])
-                main = deep_failures[0] if deep_failures else "deep_analysis_rejected"
-            elif deep.get("preferred_market") is False:
-                main = "deep_market_not_preferred"
-            elif prediction.market_odds is None:
-                main = "missing_market_odds"
-            elif not self._probability_ok(prediction):
-                main = "probability_below_premium_floor"
-            elif prediction.edge is None or float(prediction.edge) < 0.05:
-                main = "edge_below_premium_floor"
-            elif prediction.expected_value is None or float(prediction.expected_value) < 0.06:
-                main = "ev_below_premium_floor"
-            elif float(prediction.score) < 80.0:
-                main = "score_below_dynamic_floor"
-            else:
-                main = "premium_threshold_combination"
+            main = self._reason_code(prediction)
             rejection_counter[main] += 1
             for warning in soft_warnings:
                 rejection_counter[warning] += 1
-            rejected_rows.append({
+            row = {
                 "prediction": prediction,
                 "reason_code": main,
                 "reason": self._failure_label(main),
@@ -209,15 +229,23 @@ class ModelDiagnosticsService:
                 "deep_score": deep.get("score"),
                 "deep_preferred": deep.get("preferred_market"),
                 "in_high_recall_pool": prediction.id in pool_prediction_ids,
-            })
+            }
+            if main in {"premium_safe_odds", "odds_above_premium_max", "odds_below_safe_floor", "missing_market_odds"}:
+                odds_rejected_rows.append(row)
+            else:
+                rejected_rows.append(row)
 
         rejected_rows.sort(
             key=lambda row: (
                 row["in_high_recall_pool"],
-                float(row["prediction"].score or 0),
                 float(row["prediction"].expected_value or -1),
                 float(row["prediction"].edge or -1),
+                float(row["prediction"].score or 0),
             ),
+            reverse=True,
+        )
+        odds_rejected_rows.sort(
+            key=lambda row: (float(row["prediction"].score or 0), float(row["prediction"].probability or 0)),
             reverse=True,
         )
 
@@ -226,20 +254,21 @@ class ModelDiagnosticsService:
             "funnel": [
                 {"label": "Fixtures con predicción V8", "count": len({p.fixture_id for p in predictions})},
                 {"label": "Competiciones oficiales", "count": len({p.fixture_id for p in official})},
-                {"label": "High Recall Discovery Pool", "count": len({p.fixture_id for p in pool_predictions})},
+                {"label": "Premium Value discovery", "count": len({p.fixture_id for p in pool_predictions})},
                 {"label": "Historial mínimo disponible", "count": len({p.fixture_id for p in hard_data_pass})},
+                {"label": "Cuota 1.60-2.40 + EV >= 3%", "count": len({p.fixture_id for p in value_quoted_pass})},
                 {"label": "Market Confidence OK", "count": len({p.fixture_id for p in confidence_pass})},
                 {"label": "Market Intelligence OK", "count": len({p.fixture_id for p in intelligence_pass})},
                 {"label": "Deep Analysis completo", "count": len({p.fixture_id for p in deep_complete})},
                 {"label": "Mercado Deep preferido", "count": len({p.fixture_id for p in deep_preferred})},
-                {"label": "Valor mínimo EV/Edge/Prob.", "count": len({p.fixture_id for p in value_pass})},
-                {"label": "Elegibles Premium (piso dinámico)", "count": len({p.fixture_id for p in premium_eligible})},
+                {"label": "Elegibles Premium A/B", "count": len({p.fixture_id for p in premium_eligible})},
             ],
             "rejection_summary": [
                 {"code": code, "reason": self._failure_label(code), "count": count}
                 for code, count in rejection_counter.most_common(12)
             ],
             "top_rejected": rejected_rows[: max(1, int(top_rejected))],
+            "odds_rejected": odds_rejected_rows[:20],
             "pool_count": len(discovery_pool),
             "prediction_count": len(predictions),
             "official_prediction_count": len(official_ids),
