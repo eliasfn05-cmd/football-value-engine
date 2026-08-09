@@ -9,6 +9,7 @@ from typing import Any
 import requests
 
 from .base import SportsDataProvider
+from .odds_api_io import OddsApiIoProvider
 
 
 FRIENDLY_TERMS = (
@@ -59,6 +60,7 @@ class APIFootballProvider(SportsDataProvider):
         self.session = requests.Session()
         self.session.headers.update({"x-apisports-key": self.api_key})
         self.last_request_meta: dict[str, Any] = {}
+        self.secondary_odds = OddsApiIoProvider(timeout=min(timeout, 15))
 
     def _get_payload(self, endpoint: str, params: dict) -> dict:
         response = self.session.get(
@@ -115,6 +117,27 @@ class APIFootballProvider(SportsDataProvider):
             self.last_request_meta["friendlies_excluded"] = excluded
         return official
 
+    @staticmethod
+    def _goal_market_coverage(payload: list[dict]) -> tuple[bool, bool]:
+        has_btts = False
+        has_over25 = False
+        for response_item in payload or []:
+            for bookmaker in response_item.get("bookmakers") or []:
+                for bet in bookmaker.get("bets") or []:
+                    bet_name = _normalize(bet.get("name", ""))
+                    if "both teams" in bet_name and "score" in bet_name:
+                        for value in bet.get("values") or []:
+                            if _normalize(value.get("value", "")) in {"yes", "si"}:
+                                has_btts = True
+                    if "over under" in bet_name or "total goals" in bet_name or "goals over under" in bet_name:
+                        for value in bet.get("values") or []:
+                            compact = _normalize(value.get("value", "")).replace(" ", "")
+                            if compact in {"over25", "25"} or "over25" in compact:
+                                has_over25 = True
+                    if has_btts and has_over25:
+                        return True, True
+        return has_btts, has_over25
+
     def account_status(self) -> list[dict]:
         return self._get("status", {})
 
@@ -122,13 +145,10 @@ class APIFootballProvider(SportsDataProvider):
         return self._get("odds/bookmakers", {})
 
     def fixtures_by_date(self, target_date: date) -> list[dict]:
-        # Friendlies never enter ingestion/scoring. Keep API calendar semantics
-        # aligned with the application/user timezone.
         rows = self._get("fixtures", {"date": target_date.isoformat(), "timezone": "America/Lima"})
         return self._official_fixtures_only(rows)
 
     def team_recent_fixtures(self, team_id: int | str, *, last: int = 10) -> list[dict]:
-        # Historical features must also be based on official matches only.
         rows = self._get("fixtures", {"team": team_id, "last": last, "status": "FT"})
         return self._official_fixtures_only(rows)
 
@@ -144,7 +164,29 @@ class APIFootballProvider(SportsDataProvider):
         return self._official_fixtures_only(rows)
 
     def fixture_odds(self, fixture_id: int | str) -> list[dict]:
-        return self._get("odds", {"fixture": fixture_id})
+        primary = self._get("odds", {"fixture": fixture_id})
+        has_btts, has_over25 = self._goal_market_coverage(primary)
+        if (has_btts and has_over25) or not self.secondary_odds.configured:
+            self.last_request_meta["odds_secondary_used"] = False
+            self.last_request_meta["odds_primary_btts"] = has_btts
+            self.last_request_meta["odds_primary_over25"] = has_over25
+            return primary
+
+        fixture_rows = self._get("fixtures", {"id": fixture_id})
+        secondary: list[dict] = []
+        if fixture_rows:
+            try:
+                secondary = self.secondary_odds.fixture_odds_as_api_football(fixture_rows[0])
+            except Exception as exc:
+                self.last_request_meta["odds_secondary_error"] = str(exc)[:180]
+
+        secondary_btts, secondary_over25 = self._goal_market_coverage(secondary)
+        self.last_request_meta["odds_secondary_used"] = bool(secondary)
+        self.last_request_meta["odds_primary_btts"] = has_btts
+        self.last_request_meta["odds_primary_over25"] = has_over25
+        self.last_request_meta["odds_secondary_btts"] = secondary_btts
+        self.last_request_meta["odds_secondary_over25"] = secondary_over25
+        return list(primary or []) + list(secondary or [])
 
     def fixture_lineups(self, fixture_id: int | str) -> list[dict]:
         return self._get("fixtures/lineups", {"fixture": fixture_id})
