@@ -73,8 +73,10 @@ def dashboard_home(request):
 
 
 def developer_dashboard(request):
-    context = DashboardService().build_developer()
+    service = DashboardService()
+    context = service.build_developer()
     context["model_diagnostics"] = ModelDiagnosticsService().build()
+    context["deep_premium"] = service.premium_picks(limit=3)
     return render(request, "dashboard/developer.html", context)
 
 
