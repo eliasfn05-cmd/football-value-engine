@@ -13,6 +13,7 @@ from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
 from engine.competition_quality import classify_competition
 from engine.model_diagnostics import ModelDiagnosticsService
 from engine.models import DailyPremiumSelection, Prediction
+from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
 from engine.value_policy import PREMIUM_MIN_EV, PREMIUM_VALUE_MAX_ODDS, PREMIUM_VALUE_MIN_ODDS, is_premium_value_odds
 from scanner.models import PremiumGenerationJob
@@ -90,7 +91,11 @@ def _selected_date_picks(target_date, *, limit: int = 3):
         if prediction.expected_value is None or prediction.expected_value < PREMIUM_MIN_EV:
             continue
         deep = service._deep_state(prediction)
-        if deep.get("status") != "complete" or deep.get("passed") is not True or deep.get("preferred_market") is not True:
+        if deep.get("status") != "complete" or deep.get("passed") is not True:
+            continue
+        # Sprint 7.7: a non-original Deep preferred market may still be the
+        # operational choice when the preferred sibling is outside 1.60-2.40.
+        if not DailyPremiumSelector._market_eligible_deep_preference(prediction):
             continue
         rows.append(row)
         if len(rows) >= limit:
@@ -150,6 +155,54 @@ def _validated_pending_odds(*, limit: int = 20):
     return list(rows[:limit])
 
 
+def _human_current_rejection_reason(prediction: Prediction) -> str:
+    """Translate Sprint 7.7/7.8 selector diagnostics into dashboard language."""
+    reasons = DailyPremiumSelector.rejection_reasons(prediction, score_floor=76.0)
+    if not reasons:
+        return "Cumple filtros Premium; quedó fuera solo por ranking del Top 3"
+
+    labels = []
+    for reason in reasons:
+        if reason.startswith("competition:"):
+            labels.append("Competición fuera del universo profesional")
+        elif reason == "v8_gates":
+            labels.append("No supera validaciones estructurales V8")
+        elif reason == "deep_missing":
+            labels.append("Deep Analysis no disponible")
+        elif reason == "deep_rejected":
+            labels.append("Deep Analysis rechazó el perfil")
+        elif reason == "not_market_eligible_deep_preferred":
+            labels.append("Otro mercado apostable del partido tiene mejor Deep")
+        elif reason == "no_odds":
+            labels.append("Sin cuota operativa")
+        elif reason == "odds_outside_1.60_2.40":
+            labels.append("Cuota fuera de 1.60–2.40")
+        elif reason.startswith("reliability:"):
+            value = reason.split(":", 1)[1]
+            labels.append(f"Reliability insuficiente ({value})")
+        elif reason.startswith("disagreement_reliability:"):
+            labels.append("Reliability penalizada por desacuerdo modelo/mercado")
+        elif reason.startswith("raw_probability:"):
+            value = float(reason.split(":", 1)[1])
+            floor = 0.54 if prediction.market == "BTTS" else 0.56
+            label = "BTTS" if prediction.market == "BTTS" else "Over 2.5"
+            labels.append(f"Probabilidad {label} {value:.1%} < piso Sprint 7.7 {floor:.0%}")
+        elif reason.startswith("calibrated_edge:"):
+            value = float(reason.split(":", 1)[1])
+            labels.append(f"Edge calibrado {value:.1%} < 5%")
+        elif reason.startswith("reliable_ev:"):
+            value = float(reason.split(":", 1)[1])
+            labels.append(f"EV fiable {value:.1%} < 3%")
+        elif reason == "fragile_over25_two_goal_ceiling":
+            labels.append("Over frágil: riesgo de techo de 2 goles")
+        elif reason.startswith("score:"):
+            value = float(reason.split(":", 1)[1])
+            labels.append(f"Score final {value:.1f} < piso dinámico 76")
+        else:
+            labels.append(reason)
+    return "; ".join(labels)
+
+
 def health(request):
     return JsonResponse({"status": "ok", "service": "football-value-engine", "version": "1.0.0"})
 
@@ -182,6 +235,27 @@ def developer_dashboard(request):
     context["pending_odds"] = _validated_pending_odds(limit=20)
     context["model_diagnostics"] = ModelDiagnosticsService().build()
     context["deep_premium"] = service.premium_picks(limit=3)
+
+    # Sprint 7.8.1: a selected Premium must never reappear as a rejected/near
+    # candidate. Also replace legacy 59/61/raw-Edge explanations with the exact
+    # current Sprint 7.7 selector diagnostics (calibrated Edge, reliable EV,
+    # effective reliability, market-eligible Deep and dynamic score floor).
+    selected_prediction_ids = set(
+        DailyPremiumSelection.objects.filter(
+            model_version=V8_MODEL_VERSION,
+            prediction__fixture__kickoff__gte=timezone.now(),
+        ).values_list("prediction_id", flat=True)
+    )
+    cleaned_near = []
+    for row in context.get("near_premium", []):
+        prediction = row["prediction"]
+        if prediction.id in selected_prediction_ids:
+            continue
+        row = dict(row)
+        row["reason"] = _human_current_rejection_reason(prediction)
+        cleaned_near.append(row)
+    context["near_premium"] = cleaned_near
+
     return render(request, "dashboard/developer.html", context)
 
 
