@@ -49,6 +49,15 @@ TIER_RULES = (
 # gating from rejecting an otherwise fully validated value position.
 DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0, 78.0, 76.0)
 
+# Sprint 7.6 - Two-goal ceiling / fragile Over guard.
+# Borderline Over 2.5 prices above evens are accepted only when the Deep profile
+# shows enough two-sided scoring support. This specifically protects against
+# 1-1 / 2-0 type outcomes where recent Over frequency is high but BTTS support
+# on both venue samples is only neutral.
+FRAGILE_OVER_MAX_RAW_PROBABILITY = 0.60
+FRAGILE_OVER_MIN_ODDS = 2.00
+FRAGILE_OVER_MAX_COMBINED_BTTS = 0.50
+
 
 class DailyPremiumSelector:
     """Select up to three Deep-validated, market-calibrated Premium Value markets."""
@@ -75,6 +84,32 @@ class DailyPremiumSelector:
         if market == "OVER_2_5":
             return 0.56
         return 1.0
+
+    @classmethod
+    def _fragile_over25_profile(cls, prediction: Prediction) -> bool:
+        """Reject a narrow high-price Over when Deep support is not two-sided.
+
+        This is intentionally narrow to avoid overfitting one loss: it applies
+        only to Over 2.5, only when raw probability is still below 60%, only at
+        odds >= 2.00, and only when the two venue BTTS rates average 50% or less.
+        Stronger Over estimates and lower prices are unaffected.
+        """
+        if prediction.market != "OVER_2_5" or prediction.market_odds is None:
+            return False
+        calibration = cls.calibrator.calibrate(prediction)
+        if calibration.raw_probability >= FRAGILE_OVER_MAX_RAW_PROBABILITY:
+            return False
+        if float(prediction.market_odds) < FRAGILE_OVER_MIN_ODDS:
+            return False
+        reasons = prediction.reasons or {}
+        evidence = reasons.get("deep_analysis_evidence") or {}
+        try:
+            home_btts = float(evidence.get("home_btts_rate"))
+            away_btts = float(evidence.get("away_btts_rate"))
+        except (TypeError, ValueError):
+            return False
+        combined_btts = (home_btts + away_btts) / 2.0
+        return combined_btts <= FRAGILE_OVER_MAX_COMBINED_BTTS
 
     @classmethod
     def _passes_hard_value_floors(cls, prediction: Prediction) -> bool:
@@ -109,6 +144,8 @@ class DailyPremiumSelector:
             return False
         if calibration.reliable_ev < float(PREMIUM_MIN_EV):
             return False
+        if cls._fragile_over25_profile(prediction):
+            return False
         return True
 
     @classmethod
@@ -141,6 +178,8 @@ class DailyPremiumSelector:
             reasons_out.append(f"calibrated_edge:{calibration.calibrated_edge:.3f}")
         if calibration.reliable_ev < float(PREMIUM_MIN_EV):
             reasons_out.append(f"reliable_ev:{calibration.reliable_ev:.3f}")
+        if cls._fragile_over25_profile(prediction):
+            reasons_out.append("fragile_over25_two_goal_ceiling")
         if float(prediction.score or 0.0) < score_floor:
             reasons_out.append(f"score:{float(prediction.score or 0.0):.1f}")
         return reasons_out
@@ -211,7 +250,8 @@ class DailyPremiumSelector:
             "reliable_expected_value": calibration.reliable_ev,
             "probability_reliability": calibration.reliability,
             "odds_policy": "Premium Value 1.60-2.40",
-            "value_gate": "Sprint 7.5.1 raw probability + calibrated edge/EV + Deep + reliability",
+            "value_gate": "Sprint 7.6 raw probability + calibrated edge/EV + Deep + fragile-Over guard",
+            "fragile_over25_guard": cls._fragile_over25_profile(prediction),
             "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*raw_probability + 0.15*reliability",
         }
         return round(composite, 2), rationale
