@@ -10,7 +10,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from engine.models import Prediction
+from engine.models import DailyPremiumSelection, Prediction
 from .models import LearningSnapshot, PredictionOutcome
 
 
@@ -92,19 +92,7 @@ class SettlementService:
         )
         return outcome
 
-    def settle_finished(self, *, model_version: str | None = None) -> dict[str, int]:
-        """Bulk settle only finished predictions that are not already settled."""
-        qs = (
-            Prediction.objects.select_related("fixture")
-            .filter(
-                fixture__home_goals__isnull=False,
-                fixture__away_goals__isnull=False,
-            )
-            .filter(Q(outcome__isnull=True) | Q(outcome__result=PredictionOutcome.RESULT_PENDING))
-        )
-        if model_version:
-            qs = qs.filter(model_version=model_version)
-
+    def _settle_queryset(self, qs) -> dict[str, int]:
         predictions = list(qs.iterator(chunk_size=2000))
         if not predictions:
             return {"settled": 0, "wins": 0, "losses": 0, "voids": 0, "skipped_existing": 0}
@@ -180,6 +168,41 @@ class SettlementService:
             "skipped_existing": 0,
         }
 
+    def settle_finished(self, *, model_version: str | None = None) -> dict[str, int]:
+        """Bulk settle all finished predictions that are not already settled."""
+        qs = (
+            Prediction.objects.select_related("fixture")
+            .filter(
+                fixture__home_goals__isnull=False,
+                fixture__away_goals__isnull=False,
+            )
+            .filter(Q(outcome__isnull=True) | Q(outcome__result=PredictionOutcome.RESULT_PENDING))
+        )
+        if model_version:
+            qs = qs.filter(model_version=model_version)
+        return self._settle_queryset(qs)
+
+    def settle_finished_premium(self, *, model_version: str | None = None) -> dict[str, int]:
+        """Sprint 7.9.1: settle only picks that were officially published Premium.
+
+        The Premium history must never be populated from raw candidates. A pick
+        enters this path only if it has a DailyPremiumSelection row, which is the
+        operational publication record used by the dashboard.
+        """
+        official_ids = DailyPremiumSelection.objects.values_list("prediction_id", flat=True)
+        qs = (
+            Prediction.objects.select_related("fixture")
+            .filter(
+                id__in=official_ids,
+                fixture__home_goals__isnull=False,
+                fixture__away_goals__isnull=False,
+            )
+            .filter(Q(outcome__isnull=True) | Q(outcome__result=PredictionOutcome.RESULT_PENDING))
+        )
+        if model_version:
+            qs = qs.filter(model_version=model_version)
+        return self._settle_queryset(qs)
+
 
 class LearningAnalyticsService:
     """Measure model and rule performance without modifying model weights."""
@@ -224,81 +247,42 @@ class LearningAnalyticsService:
             scopes.add("rule:ahpc_low_away_btts")
         return scopes
 
-    @staticmethod
-    def _summary(scope: str, outcomes: Iterable[PredictionOutcome]) -> MetricSummary:
-        rows = list(outcomes)
-        wins = sum(row.result == PredictionOutcome.RESULT_WIN for row in rows)
-        losses = sum(row.result == PredictionOutcome.RESULT_LOSS for row in rows)
-        voids = sum(row.result == PredictionOutcome.RESULT_VOID for row in rows)
+    @classmethod
+    def _summarize(cls, scope: str, rows: Iterable[PredictionOutcome]) -> MetricSummary:
+        rows = list(rows)
+        wins = sum(1 for row in rows if row.result == PredictionOutcome.RESULT_WIN)
+        losses = sum(1 for row in rows if row.result == PredictionOutcome.RESULT_LOSS)
+        voids = sum(1 for row in rows if row.result == PredictionOutcome.RESULT_VOID)
         decided = wins + losses
-        win_rate = wins / decided if decided else None
-
-        priced = [row for row in rows if row.prediction.market_odds is not None and row.result != PredictionOutcome.RESULT_VOID]
-        total_profit = sum((Decimal(row.profit_units) for row in priced), Decimal("0"))
-        total_stake = sum((Decimal(row.stake_units) for row in priced), Decimal("0"))
-        roi = float(total_profit / total_stake) if total_stake else None
-        yield_pct = roi * 100 if roi is not None else None
-
-        probabilities = [float(row.prediction.probability) for row in rows if row.prediction.probability is not None]
-        edges = [float(row.prediction.edge) for row in rows if row.prediction.edge is not None]
-        evs = [float(row.prediction.expected_value) for row in rows if row.prediction.expected_value is not None]
-
+        stake = sum((row.stake_units for row in rows), Decimal("0"))
+        profit = sum((row.profit_units for row in rows), Decimal("0"))
+        prediction_rows = [row.prediction for row in rows]
         return MetricSummary(
             scope=scope,
             sample_size=len(rows),
             wins=wins,
             losses=losses,
             voids=voids,
-            win_rate=round(win_rate, 5) if win_rate is not None else None,
-            total_profit_units=round(float(total_profit), 4),
-            roi=round(roi, 5) if roi is not None else None,
-            yield_pct=round(yield_pct, 3) if yield_pct is not None else None,
-            avg_probability=round(mean(probabilities), 5) if probabilities else None,
-            avg_edge=round(mean(edges), 5) if edges else None,
-            avg_expected_value=round(mean(evs), 5) if evs else None,
+            win_rate=(wins / decided) if decided else None,
+            total_profit_units=float(profit),
+            roi=(float(profit / stake) if stake else None),
+            yield_pct=(float(profit / stake) if stake else None),
+            avg_probability=(mean(float(row.probability) for row in prediction_rows) if prediction_rows else None),
+            avg_edge=(mean(float(row.edge or 0) for row in prediction_rows) if prediction_rows else None),
+            avg_expected_value=(mean(float(row.expected_value or 0) for row in prediction_rows) if prediction_rows else None),
         )
 
-    def report(self, *, model_version: str, premium_only: bool = False) -> list[MetricSummary]:
-        outcomes = list(
-            PredictionOutcome.objects.select_related("prediction", "prediction__fixture")
-            .filter(prediction__model_version=model_version)
-            .exclude(result=PredictionOutcome.RESULT_PENDING)
-        )
+    def report(self, *, model_version: str | None = None, premium_only: bool = False) -> list[MetricSummary]:
+        qs = PredictionOutcome.objects.select_related("prediction")
+        if model_version:
+            qs = qs.filter(prediction__model_version=model_version)
         if premium_only:
-            outcomes = [row for row in outcomes if row.prediction.tier == "TIER_A"]
-
-        groups: dict[str, list[PredictionOutcome]] = defaultdict(list)
-        for row in outcomes:
-            prediction = row.prediction
-            groups["all"].append(row)
-            groups[f"market:{prediction.market}"].append(row)
-            groups[f"tier:{prediction.tier or 'NONE'}"].append(row)
-            for scope in self._active_rule_scopes(prediction):
-                groups[scope].append(row)
-
-        return [self._summary(scope, rows) for scope, rows in sorted(groups.items())]
-
-    def persist_report(self, *, model_version: str, premium_only: bool = False) -> list[LearningSnapshot]:
-        summaries = self.report(model_version=model_version, premium_only=premium_only)
-        snapshots = [
-            LearningSnapshot(
-                model_version=model_version,
-                scope=summary.scope,
-                sample_size=summary.sample_size,
-                wins=summary.wins,
-                losses=summary.losses,
-                voids=summary.voids,
-                win_rate=summary.win_rate,
-                roi=summary.roi,
-                yield_pct=summary.yield_pct,
-                avg_probability=summary.avg_probability,
-                avg_edge=summary.avg_edge,
-                avg_expected_value=summary.avg_expected_value,
-                total_profit_units=summary.total_profit_units,
-                metadata={"premium_only": premium_only},
-            )
-            for summary in summaries
-        ]
-        if snapshots:
-            LearningSnapshot.objects.bulk_create(snapshots, batch_size=LEARNING_BATCH_SIZE)
-        return snapshots
+            qs = qs.filter(prediction__daily_selections__isnull=False).distinct()
+        rows = list(qs.exclude(result=PredictionOutcome.RESULT_PENDING))
+        grouped: dict[str, list[PredictionOutcome]] = defaultdict(list)
+        grouped["all"].extend(rows)
+        for row in rows:
+            grouped[f"market:{row.prediction.market}"].append(row)
+            for scope in self._active_rule_scopes(row.prediction):
+                grouped[scope].append(row)
+        return [self._summarize(scope, scope_rows) for scope, scope_rows in grouped.items()]
