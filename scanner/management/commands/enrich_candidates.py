@@ -21,13 +21,13 @@ HISTORY_FETCH_LAST = 20
 HISTORY_WORKERS = 5
 STANDINGS_MAX_AGE_HOURS = 6
 INTERACTIVE_LIMIT = 40
-INTERACTIVE_MIN_SCORE = 68.0
-INTERACTIVE_MIN_EDGE = 0.04
-INTERACTIVE_MIN_EV = 0.03
+INTERACTIVE_MIN_SCORE = 64.0
+INTERACTIVE_MIN_EDGE = 0.03
+INTERACTIVE_MIN_EV = 0.02
 INTERACTIVE_LINEUP_WINDOW_HOURS = 2
 
 class Command(BaseCommand):
-    help = "Enrich strongest future V8 candidates with history, multi-source odds, lineups and standings."
+    help = "Enrich broad professional future V8 candidates with multi-source odds and contextual data."
 
     def add_arguments(self, parser):
         parser.add_argument("--date", dest="target_date", required=True, help="YYYY-MM-DD")
@@ -49,8 +49,8 @@ class Command(BaseCommand):
             raise CommandError("--date must use YYYY-MM-DD") from exc
         interactive_fast = self._interactive_fast_enabled()
         requested_limit = max(1, min(int(options["limit"]), 50))
-        # Sprint 7.4: interactive generation always sweeps the full professional
-        # discovery universe, while the final Premium selector remains strict.
+        # Sprint 7.8: interactive generation uses the full 40-fixture professional
+        # recall budget. Final Premium admission is still handled downstream.
         limit = INTERACTIVE_LIMIT if interactive_fast else requested_limit
         start = timezone.make_aware(datetime.combine(target_date, time.min)); end = start + timedelta(days=1); now = timezone.now(); future_start = max(start, now)
         entry_reasons_by_fixture = {}
