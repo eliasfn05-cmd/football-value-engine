@@ -3,6 +3,7 @@ from datetime import date, datetime, time, timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from backtesting.services import SettlementService
 from engine.models import Prediction
 from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
@@ -20,6 +21,17 @@ class Command(BaseCommand):
             target_date = date.fromisoformat(options["target_date"])
         except ValueError as exc:
             raise CommandError("--date must use YYYY-MM-DD") from exc
+
+        # Sprint 7.9.1: before publishing a new shortlist, settle every previous
+        # official Premium whose fixture already has a final score. This makes
+        # the dashboard history self-healing on the next Generate Premium run
+        # instead of depending exclusively on a later settlement pipeline.
+        ledger = SettlementService().settle_finished_premium(model_version=V8_MODEL_VERSION)
+        if ledger.get("settled"):
+            self.stdout.write(
+                f"[premium-ledger] settled={ledger['settled']} "
+                f"wins={ledger['wins']} losses={ledger['losses']} voids={ledger['voids']}"
+            )
 
         selector = DailyPremiumSelector(max_picks=options["max_picks"])
         rows = selector.select(target_date)
