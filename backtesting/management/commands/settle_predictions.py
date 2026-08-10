@@ -6,11 +6,20 @@ from backtesting.services import SettlementService
 
 
 class Command(BaseCommand):
-    help = "Settle predictions whose fixtures already have final scores."
+    help = "Settle official Premium picks whose fixtures already have final scores."
 
     def add_arguments(self, parser):
         parser.add_argument("--model-version", dest="model_version")
+        parser.add_argument(
+            "--all-predictions",
+            action="store_true",
+            help="Compatibility/debug mode: settle every prediction, not only official Premium selections.",
+        )
 
     def handle(self, *args, **options):
-        result = SettlementService().settle_finished(model_version=options.get("model_version"))
+        service = SettlementService()
+        if options.get("all_predictions"):
+            result = service.settle_finished(model_version=options.get("model_version"))
+        else:
+            result = service.settle_finished_premium(model_version=options.get("model_version"))
         self.stdout.write(json.dumps(result, indent=2, ensure_ascii=False))
