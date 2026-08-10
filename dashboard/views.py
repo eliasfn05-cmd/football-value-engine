@@ -93,8 +93,6 @@ def _selected_date_picks(target_date, *, limit: int = 3):
         deep = service._deep_state(prediction)
         if deep.get("status") != "complete" or deep.get("passed") is not True:
             continue
-        # Sprint 7.7: a non-original Deep preferred market may still be the
-        # operational choice when the preferred sibling is outside 1.60-2.40.
         if not DailyPremiumSelector._market_eligible_deep_preference(prediction):
             continue
         rows.append(row)
@@ -128,6 +126,12 @@ def _selected_date_operational(target_date, picks):
 
 
 def _validated_pending_odds(*, limit: int = 20):
+    """Show missing odds only when the prediction is genuinely close to Premium.
+
+    Sprint 7.8 broad recall intentionally explores weak/neutral rows too. Those
+    rows are useful internally, but they must not pollute the developer UI as
+    actionable 'pending odds'.
+    """
     today = timezone.localdate()
     pool = high_recall_candidate_pool(
         today,
@@ -137,7 +141,7 @@ def _validated_pending_odds(*, limit: int = 20):
     prediction_ids = [entry.prediction_id for entry in pool]
     if not prediction_ids:
         return []
-    rows = (
+    qs = (
         Prediction.objects.select_related(
             "fixture",
             "fixture__home_team",
@@ -149,10 +153,27 @@ def _validated_pending_odds(*, limit: int = 20):
             model_version=V8_MODEL_VERSION,
             fixture__kickoff__gte=timezone.now(),
             market_odds__isnull=True,
+            score__gte=70.0,
         )
         .order_by("-score", "-probability", "fixture__kickoff")
     )
-    return list(rows[:limit])
+    rows = []
+    for prediction in qs.iterator(chunk_size=100):
+        if classify_competition(prediction.fixture).excluded:
+            continue
+        p = float(prediction.probability)
+        if prediction.market == "BTTS":
+            if p < 0.54:
+                continue
+        elif prediction.market == "OVER_2_5":
+            if p < 0.56:
+                continue
+        else:
+            continue
+        rows.append(prediction)
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 def _human_current_rejection_reason(prediction: Prediction) -> str:
@@ -236,10 +257,6 @@ def developer_dashboard(request):
     context["model_diagnostics"] = ModelDiagnosticsService().build()
     context["deep_premium"] = service.premium_picks(limit=3)
 
-    # Sprint 7.8.1: a selected Premium must never reappear as a rejected/near
-    # candidate. Also replace legacy 59/61/raw-Edge explanations with the exact
-    # current Sprint 7.7 selector diagnostics (calibrated Edge, reliable EV,
-    # effective reliability, market-eligible Deep and dynamic score floor).
     selected_prediction_ids = set(
         DailyPremiumSelection.objects.filter(
             model_version=V8_MODEL_VERSION,
