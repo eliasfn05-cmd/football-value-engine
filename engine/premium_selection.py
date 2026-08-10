@@ -16,11 +16,7 @@ from .probability_calibration import (
     ProbabilityEVCalibrationService,
 )
 from .score_v8 import V8_MODEL_VERSION
-from .value_policy import (
-    PREMIUM_MIN_EV,
-    TIER_A_MIN_EV,
-    is_premium_value_odds,
-)
+from .value_policy import PREMIUM_MIN_EV, TIER_A_MIN_EV, is_premium_value_odds
 
 
 @dataclass(frozen=True)
@@ -34,29 +30,26 @@ class TierRule:
     min_reliability: float
 
 
-# Sprint 7.5.1: the absolute probability floor is a MODEL evidence floor and
-# therefore uses raw model probability. Market calibration is used for what it
-# is designed for: calibrated edge, EV and reliability. Using the already
-# market-shrunk probability again as an absolute floor was a double penalty.
 TIER_RULES = (
     TierRule("A", 90.0, 0.07, float(TIER_A_MIN_EV), 0.58, 0.60, TIER_A_MIN_RELIABILITY),
     TierRule("B", 84.0, 0.05, float(PREMIUM_MIN_EV), 0.54, 0.56, PREMIUM_MIN_RELIABILITY),
 )
 
-# Tier B may relax only the composite score. All hard professional gates stay
-# fixed: official competition, odds 1.60-2.40, Deep pass/preferred market,
-# reliability, calibrated edge and reliable EV. This prevents redundant score
-# gating from rejecting an otherwise fully validated value position.
 DYNAMIC_SCORE_FLOORS = (84.0, 82.0, 80.0, 78.0, 76.0)
 
 # Sprint 7.6 - Two-goal ceiling / fragile Over guard.
-# Borderline Over 2.5 prices above evens are accepted only when the Deep profile
-# shows enough two-sided scoring support. This specifically protects against
-# 1-1 / 2-0 type outcomes where recent Over frequency is high but BTTS support
-# on both venue samples is only neutral.
 FRAGILE_OVER_MAX_RAW_PROBABILITY = 0.60
 FRAGILE_OVER_MIN_ODDS = 2.00
 FRAGILE_OVER_MAX_COMBINED_BTTS = 0.50
+
+# Sprint 7.7 - Market disagreement guard.
+# A large model-vs-market probability gap is not an automatic rejection: it can
+# be genuine value. It does, however, lower effective reliability and rank so
+# an overconfident raw estimate cannot dominate the Premium list unchecked.
+DISAGREEMENT_FREE_GAP = 0.12
+DISAGREEMENT_MAX_GAP = 0.30
+DISAGREEMENT_MAX_RELIABILITY_PENALTY = 0.10
+DISAGREEMENT_MAX_RANK_PENALTY = 8.0
 
 
 class DailyPremiumSelector:
@@ -86,14 +79,57 @@ class DailyPremiumSelector:
         return 1.0
 
     @classmethod
-    def _fragile_over25_profile(cls, prediction: Prediction) -> bool:
-        """Reject a narrow high-price Over when Deep support is not two-sided.
+    def _disagreement_metrics(cls, prediction: Prediction) -> dict:
+        calibration = cls.calibrator.calibrate(prediction)
+        gap = max(0.0, calibration.raw_probability - calibration.implied_probability)
+        span = max(0.001, DISAGREEMENT_MAX_GAP - DISAGREEMENT_FREE_GAP)
+        severity = max(0.0, min(1.0, (gap - DISAGREEMENT_FREE_GAP) / span))
+        reliability_penalty = severity * DISAGREEMENT_MAX_RELIABILITY_PENALTY
+        rank_penalty = severity * DISAGREEMENT_MAX_RANK_PENALTY
+        return {
+            "gap": gap,
+            "severity": severity,
+            "reliability_penalty": reliability_penalty,
+            "rank_penalty": rank_penalty,
+            "effective_reliability": max(0.0, calibration.reliability - reliability_penalty),
+        }
 
-        This is intentionally narrow to avoid overfitting one loss: it applies
-        only to Over 2.5, only when raw probability is still below 60%, only at
-        odds >= 2.00, and only when the two venue BTTS rates average 50% or less.
-        Stronger Over estimates and lower prices are unaffected.
+    @classmethod
+    def _market_eligible_deep_preference(cls, prediction: Prediction) -> bool:
+        """Sprint 7.7: Deep preference is evaluated only among bettable markets.
+
+        If this market is the original Deep preferred market, it passes. If it
+        is not, it may act as the fallback only when the original preferred
+        sibling for the same fixture/model is outside Premium odds (or has no
+        usable price). This fixes the deadlock where an unbettable 1.38 Over
+        blocked a valid 1.62 BTTS without weakening any value/EV/reliability gate.
         """
+        reasons = prediction.reasons or {}
+        if reasons.get("deep_preferred_market") is True:
+            return True
+
+        siblings = Prediction.objects.filter(
+            fixture_id=prediction.fixture_id,
+            model_version=prediction.model_version,
+            market__in={"BTTS", "OVER_2_5"},
+        ).exclude(pk=prediction.pk)
+
+        preferred_siblings = [
+            sibling for sibling in siblings
+            if (sibling.reasons or {}).get("deep_preferred_market") is True
+        ]
+        if not preferred_siblings:
+            return False
+
+        # A non-preferred market is a fallback only when every Deep-preferred
+        # sibling is operationally unavailable under the hard Premium odds rule.
+        for sibling in preferred_siblings:
+            if sibling.market_odds is not None and is_premium_value_odds(sibling.market_odds):
+                return False
+        return True
+
+    @classmethod
+    def _fragile_over25_profile(cls, prediction: Prediction) -> bool:
         if prediction.market != "OVER_2_5" or prediction.market_odds is None:
             return False
         calibration = cls.calibrator.calibrate(prediction)
@@ -101,15 +137,13 @@ class DailyPremiumSelector:
             return False
         if float(prediction.market_odds) < FRAGILE_OVER_MIN_ODDS:
             return False
-        reasons = prediction.reasons or {}
-        evidence = reasons.get("deep_analysis_evidence") or {}
+        evidence = (prediction.reasons or {}).get("deep_analysis_evidence") or {}
         try:
             home_btts = float(evidence.get("home_btts_rate"))
             away_btts = float(evidence.get("away_btts_rate"))
         except (TypeError, ValueError):
             return False
-        combined_btts = (home_btts + away_btts) / 2.0
-        return combined_btts <= FRAGILE_OVER_MAX_COMBINED_BTTS
+        return (home_btts + away_btts) / 2.0 <= FRAGILE_OVER_MAX_COMBINED_BTTS
 
     @classmethod
     def _passes_hard_value_floors(cls, prediction: Prediction) -> bool:
@@ -122,22 +156,21 @@ class DailyPremiumSelector:
             return False
         if reasons.get("deep_analysis_passed") is not True:
             return False
-        if reasons.get("deep_preferred_market") is not True:
+        if not cls._market_eligible_deep_preference(prediction):
             return False
         if prediction.market_odds is None or prediction.edge is None or prediction.expected_value is None:
             return False
         if not is_premium_value_odds(prediction.market_odds):
             return False
-
-        calibration = cls.calibrator.calibrate(prediction)
-        if not calibration.premium_reliable:
-            return False
         if prediction.market not in {"BTTS", "OVER_2_5"}:
             return False
 
-        # IMPORTANT: use raw model probability for statistical plausibility.
-        # The calibrated probability has already been shrunk toward market price;
-        # applying the same absolute floor to it double-counts the bookmaker.
+        calibration = cls.calibrator.calibrate(prediction)
+        disagreement = cls._disagreement_metrics(prediction)
+        if not calibration.premium_reliable:
+            return False
+        if disagreement["effective_reliability"] < PREMIUM_MIN_RELIABILITY:
+            return False
         if calibration.raw_probability < cls._base_probability_floor(prediction.market):
             return False
         if calibration.calibrated_edge < 0.05:
@@ -150,52 +183,57 @@ class DailyPremiumSelector:
 
     @classmethod
     def rejection_reasons(cls, prediction: Prediction, *, score_floor: float = 76.0) -> list[str]:
-        reasons_out: list[str] = []
+        out: list[str] = []
         quality = classify_competition(prediction.fixture)
         if quality.excluded:
-            reasons_out.append(f"competition:{quality.reason}")
-            return reasons_out
+            return [f"competition:{quality.reason}"]
         reasons = prediction.reasons or {}
         if not reasons.get("v8_gates_passed", False):
-            reasons_out.append("v8_gates")
+            out.append("v8_gates")
         if reasons.get("deep_analysis_version") != DEEP_ANALYSIS_VERSION:
-            reasons_out.append("deep_missing")
+            out.append("deep_missing")
         elif reasons.get("deep_analysis_passed") is not True:
-            reasons_out.append("deep_rejected")
-        if reasons.get("deep_preferred_market") is not True:
-            reasons_out.append("not_deep_preferred")
+            out.append("deep_rejected")
+        if not cls._market_eligible_deep_preference(prediction):
+            out.append("not_market_eligible_deep_preferred")
         if prediction.market_odds is None:
-            reasons_out.append("no_odds")
-            return reasons_out
+            out.append("no_odds")
+            return out
         if not is_premium_value_odds(prediction.market_odds):
-            reasons_out.append("odds_outside_1.60_2.40")
+            out.append("odds_outside_1.60_2.40")
+
         calibration = cls.calibrator.calibrate(prediction)
+        disagreement = cls._disagreement_metrics(prediction)
         if calibration.reliability < PREMIUM_MIN_RELIABILITY:
-            reasons_out.append(f"reliability:{calibration.reliability:.3f}")
+            out.append(f"reliability:{calibration.reliability:.3f}")
+        if disagreement["effective_reliability"] < PREMIUM_MIN_RELIABILITY:
+            out.append(
+                f"disagreement_reliability:{disagreement['effective_reliability']:.3f}"
+                f"/gap:{disagreement['gap']:.3f}"
+            )
         if calibration.raw_probability < cls._base_probability_floor(prediction.market):
-            reasons_out.append(f"raw_probability:{calibration.raw_probability:.3f}")
+            out.append(f"raw_probability:{calibration.raw_probability:.3f}")
         if calibration.calibrated_edge < 0.05:
-            reasons_out.append(f"calibrated_edge:{calibration.calibrated_edge:.3f}")
+            out.append(f"calibrated_edge:{calibration.calibrated_edge:.3f}")
         if calibration.reliable_ev < float(PREMIUM_MIN_EV):
-            reasons_out.append(f"reliable_ev:{calibration.reliable_ev:.3f}")
+            out.append(f"reliable_ev:{calibration.reliable_ev:.3f}")
         if cls._fragile_over25_profile(prediction):
-            reasons_out.append("fragile_over25_two_goal_ceiling")
+            out.append("fragile_over25_two_goal_ceiling")
         if float(prediction.score or 0.0) < score_floor:
-            reasons_out.append(f"score:{float(prediction.score or 0.0):.1f}")
-        return reasons_out
+            out.append(f"score:{float(prediction.score or 0.0):.1f}")
+        return out
 
     @classmethod
     def _tier_for(cls, prediction: Prediction, *, score_floor: float = 84.0) -> str | None:
         if not cls._passes_hard_value_floors(prediction):
             return None
-
         calibration = cls.calibrator.calibrate(prediction)
-        # Raw probability is the model-side plausibility check. Calibrated edge,
-        # EV and reliability are the market-side value checks.
+        disagreement = cls._disagreement_metrics(prediction)
         probability = calibration.raw_probability
         score = float(prediction.score)
         edge = calibration.calibrated_edge
         ev = calibration.reliable_ev
+        reliability = disagreement["effective_reliability"]
 
         for rule in TIER_RULES:
             effective_score = rule.min_score
@@ -206,7 +244,7 @@ class DailyPremiumSelector:
                 and edge >= rule.min_edge
                 and ev >= rule.min_ev
                 and probability >= cls._probability_floor(rule, prediction.market)
-                and calibration.reliability >= rule.min_reliability
+                and reliability >= rule.min_reliability
             ):
                 return rule.name
         return None
@@ -214,19 +252,21 @@ class DailyPremiumSelector:
     @classmethod
     def _rank_score(cls, prediction: Prediction) -> tuple[float, dict]:
         calibration = cls.calibrator.calibrate(prediction)
+        disagreement = cls._disagreement_metrics(prediction)
         score_component = max(0.0, min(float(prediction.score), 100.0))
         probability_component = calibration.raw_probability * 100.0
         ev_component = min(max(0.0, calibration.reliable_ev) / 0.20, 1.0) * 100.0
         edge_component = min(max(0.0, calibration.calibrated_edge) / 0.12, 1.0) * 100.0
-        reliability_component = calibration.reliability_score
+        reliability_component = disagreement["effective_reliability"] * 100.0
 
-        composite = (
+        base_composite = (
             0.22 * score_component
             + 0.30 * ev_component
             + 0.20 * edge_component
             + 0.13 * probability_component
             + 0.15 * reliability_component
         )
+        composite = max(0.0, base_composite - disagreement["rank_penalty"])
         reasons = prediction.reasons or {}
         rationale = {
             "score_component": round(score_component, 2),
@@ -238,6 +278,8 @@ class DailyPremiumSelector:
             "deep_analysis_evidence": reasons.get("deep_analysis_evidence") or {},
             "deep_analysis_warnings": reasons.get("deep_analysis_warnings") or [],
             "deep_score": reasons.get("deep_score"),
+            "market_eligible_deep_preference": cls._market_eligible_deep_preference(prediction),
+            "original_deep_preferred_market": reasons.get("deep_preferred_market") is True,
             "probability_calibration": calibration.as_dict(),
             "raw_probability": calibration.raw_probability,
             "calibrated_probability": calibration.calibrated_probability,
@@ -249,10 +291,16 @@ class DailyPremiumSelector:
             "calibrated_expected_value": calibration.calibrated_ev,
             "reliable_expected_value": calibration.reliable_ev,
             "probability_reliability": calibration.reliability,
+            "effective_reliability_after_disagreement": round(disagreement["effective_reliability"], 4),
+            "model_market_probability_gap": round(disagreement["gap"], 4),
+            "disagreement_severity": round(disagreement["severity"], 4),
+            "disagreement_reliability_penalty": round(disagreement["reliability_penalty"], 4),
+            "disagreement_rank_penalty": round(disagreement["rank_penalty"], 2),
+            "rank_before_disagreement_penalty": round(base_composite, 2),
             "odds_policy": "Premium Value 1.60-2.40",
-            "value_gate": "Sprint 7.6 raw probability + calibrated edge/EV + Deep + fragile-Over guard",
+            "value_gate": "Sprint 7.7 market-eligible Deep + raw probability + calibrated edge/EV + disagreement + fragile-Over guard",
             "fragile_over25_guard": cls._fragile_over25_profile(prediction),
-            "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*raw_probability + 0.15*reliability",
+            "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*raw_probability + 0.15*effective_reliability - disagreement_penalty",
         }
         return round(composite, 2), rationale
 
