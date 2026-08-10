@@ -143,11 +143,7 @@ class Prediction(models.Model):
 
 
 class FixtureScoreState(models.Model):
-    """Last feature fingerprint scored for a fixture/model pair.
-
-    Sprint 5 uses this as the safe incremental checkpoint: a fixture is only
-    re-evaluated when the exact persisted feature vector consumed by V8 changes.
-    """
+    """Last feature fingerprint scored for a fixture/model pair."""
 
     fixture = models.ForeignKey(Fixture, on_delete=models.CASCADE, related_name="score_states")
     model_version = models.CharField(max_length=30)
@@ -167,11 +163,7 @@ class FixtureScoreState(models.Model):
 
 
 class DailyPremiumSelection(models.Model):
-    """Operational Sprint 6 selection, isolated from raw model tiers.
-
-    The raw Prediction remains immutable evidence for backtesting. This table
-    stores the daily ranked shortlist that the operational dashboard presents.
-    """
+    """Current operational daily shortlist shown on the dashboard."""
 
     TIER_A = "A"
     TIER_B = "B"
@@ -196,3 +188,36 @@ class DailyPremiumSelection(models.Model):
             models.Index(fields=["target_date", "model_version", "rank"], name="premium_date_model_rank_idx"),
         ]
         ordering = ["target_date", "rank"]
+
+
+class PremiumPublicationLedger(models.Model):
+    """Immutable proof that a prediction was officially published as Premium.
+
+    Unlike DailyPremiumSelection, this row is never deleted when the daily Top 3
+    is refreshed. It is the source of truth for historical settlement and ROI.
+    """
+
+    target_date = models.DateField(db_index=True)
+    prediction = models.OneToOneField(
+        Prediction,
+        on_delete=models.PROTECT,
+        related_name="premium_publication",
+    )
+    published_rank = models.PositiveSmallIntegerField()
+    premium_tier = models.CharField(max_length=1)
+    premium_rank_score = models.DecimalField(max_digits=5, decimal_places=2)
+    model_version = models.CharField(max_length=30, db_index=True)
+    market = models.CharField(max_length=60)
+    selection = models.CharField(max_length=80)
+    odds = models.DecimalField(max_digits=7, decimal_places=3)
+    snapshot = models.JSONField(default=dict, blank=True)
+    published_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["target_date", "model_version"], name="premledger_date_model_idx"),
+        ]
+        ordering = ["-published_at"]
+
+    def __str__(self):
+        return f"{self.target_date} #{self.published_rank} {self.prediction_id}"
