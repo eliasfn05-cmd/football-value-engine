@@ -10,7 +10,7 @@ from django.utils import timezone
 from .candidate_pool import CandidatePoolRule, high_recall_candidate_pool
 from .competition_quality import classify_competition
 from .deep_analysis import DEEP_ANALYSIS_VERSION
-from .models import Prediction
+from .models import DailyPremiumSelection, Prediction
 from .premium_selection import DailyPremiumSelector
 from .score_v8 import V8_MODEL_VERSION
 from .value_policy import PREMIUM_MIN_EV, PREMIUM_VALUE_MAX_ODDS, odds_band
@@ -42,12 +42,12 @@ FAILURE_LABELS = {
     "premium_safe_odds": "Premium Safe: cuota 1.30-1.59; no compite por Top 3",
     "odds_above_premium_max": "Cuota > 2.40; fuera de Premium Value",
     "odds_below_safe_floor": "Cuota < 1.30; descartado",
-    "edge_below_premium_floor": "Edge por debajo de 5%",
-    "ev_below_premium_floor": "EV por debajo de 3%",
-    "probability_below_premium_floor": "Probabilidad por debajo del piso Premium",
-    "score_below_dynamic_floor": "Score final por debajo del piso dinámico 80",
+    "edge_below_premium_floor": "Edge calibrado por debajo de 5%",
+    "ev_below_premium_floor": "EV fiable por debajo de 3%",
+    "probability_below_premium_floor": "Probabilidad por debajo del piso Sprint 7.7",
+    "score_below_dynamic_floor": "Score final por debajo del piso dinámico 76",
     "deep_analysis_pending": "Deep Analysis pendiente/no disponible",
-    "deep_market_not_preferred": "Mercado descartado: otro mercado del partido tiene mejor Deep Score",
+    "deep_market_not_preferred": "Otro mercado apostable del partido tiene mejor Deep",
     "deep_analysis_rejected": "Deep Analysis rechazó el mercado",
     "deep_over25_pattern_rejected": "Deep: patrón Over 2.5 insuficiente",
     "deep_over25_low_score_rejected": "Deep: perfil de pocos goles incompatible con Over 2.5",
@@ -58,7 +58,9 @@ FAILURE_LABELS = {
 
 
 class ModelDiagnosticsService:
-    """Explain the sequential Premium Value funnel and keep low-odds rejections separate."""
+    """Explain the sequential Premium Value funnel using the official selector rules."""
+
+    SCORE_FLOOR = 76.0
 
     def __init__(self, model_version: str = V8_MODEL_VERSION):
         self.model_version = model_version
@@ -76,9 +78,9 @@ class ModelDiagnosticsService:
     def _probability_ok(prediction: Prediction) -> bool:
         p = float(prediction.probability)
         if prediction.market == "BTTS":
-            return p >= 0.59
+            return p >= 0.54
         if prediction.market == "OVER_2_5":
-            return p >= 0.61
+            return p >= 0.56
         return False
 
     @staticmethod
@@ -112,24 +114,33 @@ class ModelDiagnosticsService:
             if Decimal(str(prediction.market_odds)) > PREMIUM_VALUE_MAX_ODDS:
                 return "odds_above_premium_max"
             return "odds_below_safe_floor"
-        if prediction.expected_value is None or Decimal(str(prediction.expected_value)) < PREMIUM_MIN_EV:
-            return "ev_below_premium_floor"
 
-        deep = self._deep_state(prediction)
-        if deep.get("status") != "complete":
+        selector_reasons = DailyPremiumSelector.rejection_reasons(
+            prediction,
+            score_floor=self.SCORE_FLOOR,
+        )
+        if not selector_reasons:
+            return "premium_threshold_combination"
+        first = selector_reasons[0]
+        if first == "deep_missing":
             return "deep_analysis_pending"
-        if deep.get("passed") is False:
+        if first == "deep_rejected":
+            deep = self._deep_state(prediction)
             deep_failures = list(deep.get("failures") or [])
             return deep_failures[0] if deep_failures else "deep_analysis_rejected"
-        if deep.get("preferred_market") is False:
+        if first == "not_market_eligible_deep_preferred":
             return "deep_market_not_preferred"
-        if not self._probability_ok(prediction):
+        if first.startswith("raw_probability:"):
             return "probability_below_premium_floor"
-        if prediction.edge is None or float(prediction.edge) < 0.05:
+        if first.startswith("calibrated_edge:"):
             return "edge_below_premium_floor"
-        if float(prediction.score) < 80.0:
+        if first.startswith("reliable_ev:"):
+            return "ev_below_premium_floor"
+        if first.startswith("score:"):
             return "score_below_dynamic_floor"
-        return "premium_threshold_combination"
+        if first.startswith("competition:"):
+            return first
+        return first
 
     def build(self, target_date=None, *, top_rejected: int = 5) -> dict[str, Any]:
         target_date = target_date or timezone.localdate()
@@ -152,6 +163,12 @@ class ModelDiagnosticsService:
 
         official = [p for p in predictions if not classify_competition(p.fixture).excluded]
         official_ids = {p.id for p in official}
+        selected_prediction_ids = set(
+            DailyPremiumSelection.objects.filter(
+                target_date=target_date,
+                model_version=self.model_version,
+            ).values_list("prediction_id", flat=True)
+        )
         discovery_pool = high_recall_candidate_pool(
             target_date,
             rule=CandidatePoolRule(limit=60, require_premium_value_odds=True),
@@ -197,15 +214,19 @@ class ModelDiagnosticsService:
             if deep.get("status") != "complete":
                 continue
             deep_complete.append(prediction)
-            if deep.get("passed") is not True or deep.get("preferred_market") is not True:
+            if deep.get("passed") is not True or not DailyPremiumSelector._market_eligible_deep_preference(prediction):
                 continue
             deep_preferred.append(prediction)
 
-            if DailyPremiumSelector._tier_for(prediction, score_floor=80.0) is not None:
+            if DailyPremiumSelector._tier_for(prediction, score_floor=self.SCORE_FLOOR) is not None:
                 premium_eligible.append(prediction)
 
         for prediction in official:
-            if DailyPremiumSelector._tier_for(prediction, score_floor=80.0) is not None:
+            # Sprint 7.8.3: the audit can never classify an official selection as
+            # rejected, even if older diagnostic heuristics disagree with it.
+            if prediction.id in selected_prediction_ids:
+                continue
+            if DailyPremiumSelector._tier_for(prediction, score_floor=self.SCORE_FLOOR) is not None:
                 continue
             reasons = prediction.reasons or {}
             soft_warnings = list(reasons.get("v8_soft_warnings") or [])
@@ -260,7 +281,7 @@ class ModelDiagnosticsService:
                 {"label": "Market Confidence OK", "count": len({p.fixture_id for p in confidence_pass})},
                 {"label": "Market Intelligence OK", "count": len({p.fixture_id for p in intelligence_pass})},
                 {"label": "Deep Analysis completo", "count": len({p.fixture_id for p in deep_complete})},
-                {"label": "Mercado Deep preferido", "count": len({p.fixture_id for p in deep_preferred})},
+                {"label": "Mercado Deep elegible", "count": len({p.fixture_id for p in deep_preferred})},
                 {"label": "Elegibles Premium A/B", "count": len({p.fixture_id for p in premium_eligible})},
             ],
             "rejection_summary": [
