@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from backtesting.services import SettlementService
+from backtesting.premium_settlement import settle_published_premium
 from engine.models import Prediction, PremiumPublicationLedger
 from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
@@ -47,8 +47,7 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
-        # Settle anything already published before refreshing the current Top.
-        ledger = SettlementService().settle_finished_premium(model_version=V8_MODEL_VERSION)
+        ledger = settle_published_premium(model_version=V8_MODEL_VERSION)
         self.stdout.write(
             f"[premium-ledger] settled={ledger.get('settled', 0)} wins={ledger.get('wins', 0)} "
             f"losses={ledger.get('losses', 0)} voids={ledger.get('voids', 0)}"
@@ -92,9 +91,6 @@ class Command(BaseCommand):
             prediction = row.prediction
             fixture = prediction.fixture
             calibration = selector.calibrator.calibrate(prediction)
-
-            # Immutable publication proof. DailyPremiumSelection may be rebuilt
-            # later, but this ledger row survives and remains settlement truth.
             PremiumPublicationLedger.objects.get_or_create(
                 prediction=prediction,
                 defaults={
@@ -109,7 +105,6 @@ class Command(BaseCommand):
                     "snapshot": self._snapshot(row, calibration),
                 },
             )
-
             self.stdout.write(
                 f"[premium] #{row.rank} tier={row.premium_tier} rank_score={row.premium_rank_score} "
                 f"{fixture.home_team.name} vs {fixture.away_team.name} "
