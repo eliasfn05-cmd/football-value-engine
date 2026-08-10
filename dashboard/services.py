@@ -10,7 +10,7 @@ from backtesting.models import PredictionOutcome
 from backtesting.services import LearningAnalyticsService
 from engine.competition_quality import classify_competition
 from engine.deep_analysis import DEEP_ANALYSIS_VERSION
-from engine.models import DailyPremiumSelection, Prediction
+from engine.models import DailyPremiumSelection, Prediction, PremiumPublicationLedger
 from engine.score_v8 import V8_MODEL_VERSION
 from engine.value_policy import (
     PREMIUM_MIN_EV,
@@ -46,11 +46,20 @@ class DashboardService:
         self.model_version = model_version
 
     def _operational_outcomes(self):
+        """Settled outcomes of picks that were actually published Premium.
+
+        Sprint 7.9.1 deliberately uses PremiumPublicationLedger rather than the
+        mutable DailyPremiumSelection table. Refreshing today's Top 3 can delete
+        current shortlist rows; it must never erase historical performance.
+        """
+        official_ids = PremiumPublicationLedger.objects.filter(
+            model_version=self.model_version
+        ).values_list("prediction_id", flat=True)
         return (
             PredictionOutcome.objects.select_related("prediction")
             .filter(
                 prediction__model_version=self.model_version,
-                prediction__daily_selections__model_version=self.model_version,
+                prediction_id__in=official_ids,
             )
             .exclude(result=PredictionOutcome.RESULT_PENDING)
             .distinct()
@@ -280,7 +289,6 @@ class DashboardService:
         return "Fuera del Top 3 diario"
 
     def near_premium(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        # Only genuine Premium Value candidates belong in this table.
         qs = (
             Prediction.objects.select_related(
                 "fixture",
