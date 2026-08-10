@@ -134,3 +134,7 @@ jobs:
             --attempts "$ATTEMPTS" \
             --retry-delay "$RETRY_DELAY" \
             "${EXTRA_ARGS[@]}"
+
+      - name: Backtest Over 2.5 fragility cohort
+        if: ${{ success() }}
+        run: python manage.py over25_fragility_backtest --model-version "$MODEL_VERSION"
