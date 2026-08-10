@@ -222,8 +222,6 @@ class ModelDiagnosticsService:
                 premium_eligible.append(prediction)
 
         for prediction in official:
-            # Sprint 7.8.3: the audit can never classify an official selection as
-            # rejected, even if older diagnostic heuristics disagree with it.
             if prediction.id in selected_prediction_ids:
                 continue
             if DailyPremiumSelector._tier_for(prediction, score_floor=self.SCORE_FLOOR) is not None:
@@ -235,6 +233,13 @@ class ModelDiagnosticsService:
             rejection_counter[main] += 1
             for warning in soft_warnings:
                 rejection_counter[warning] += 1
+
+            # Sprint 7.8.4: missing odds are neither a market rejection nor a
+            # Premium rejection. They belong exclusively to the dedicated
+            # pending-odds panel, where only genuinely near-Premium rows appear.
+            if main == "missing_market_odds":
+                continue
+
             row = {
                 "prediction": prediction,
                 "reason_code": main,
@@ -251,7 +256,7 @@ class ModelDiagnosticsService:
                 "deep_preferred": deep.get("preferred_market"),
                 "in_high_recall_pool": prediction.id in pool_prediction_ids,
             }
-            if main in {"premium_safe_odds", "odds_above_premium_max", "odds_below_safe_floor", "missing_market_odds"}:
+            if main in {"premium_safe_odds", "odds_above_premium_max", "odds_below_safe_floor"}:
                 odds_rejected_rows.append(row)
             else:
                 rejected_rows.append(row)
