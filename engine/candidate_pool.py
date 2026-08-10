@@ -3,18 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
-from django.db.models import Q
 from django.utils import timezone
 
 from .competition_quality import classify_competition
 from .models import Prediction
 from .score_v8 import V8_MODEL_VERSION
-from .value_policy import PREMIUM_MIN_EV, is_premium_value_odds
+from .value_policy import is_premium_value_odds
 
-# Sprint 7.8 — Broad Professional Recall
-# Discovery is intentionally broader than Premium admission. The goal is to
-# investigate more official senior fixtures with odds + rescore before rejecting
-# them. Final Premium gates remain unchanged in premium_selection.py.
+# Sprint 7.8.1 — Broad Professional Recall, guaranteed fill.
+# Discovery is deliberately wider than Premium admission. We first keep the
+# strongest near-Premium signals and then fill with the best remaining official
+# senior fixtures until the pool reaches 24-30 where the schedule allows it.
+# Final Premium gates are unchanged in premium_selection.py.
 DISCOVERY_MIN_SCORE = 64.0
 DISCOVERY_BTTS_PROBABILITY = 0.50
 DISCOVERY_OVER25_PROBABILITY = 0.52
@@ -23,13 +23,15 @@ DISCOVERY_DATA_QUALITY = 45.0
 DISCOVERY_SOFT_BTTS = 0.47
 DISCOVERY_SOFT_OVER25 = 0.49
 DISCOVERY_SOFT_SCORE = 54.0
+DISCOVERY_BASELINE_PROBABILITY = 0.42
+DISCOVERY_BASELINE_SCORE = 45.0
+DISCOVERY_BASELINE_DATA_QUALITY = 35.0
 DISCOVERY_MIN_FIXTURES = 24
 DISCOVERY_TARGET_FIXTURES = 30
 
 
 @dataclass(frozen=True)
 class CandidatePoolRule:
-    # Discovery must favor recall; the expensive final selector remains strict.
     min_score: float = DISCOVERY_MIN_SCORE
     min_edge: float = 0.03
     min_ev: float = 0.02
@@ -67,7 +69,6 @@ def _market_soft_floor(market: str) -> float:
 
 
 def _preliminary_score(prediction: Prediction) -> float:
-    """Recall-oriented ranking used before expensive enrichment."""
     score = max(0.0, min(float(prediction.score or 0.0), 100.0))
     probability = max(0.0, min(float(prediction.probability or 0.0), 1.0)) * 100.0
     edge = max(0.0, float(prediction.edge or 0.0))
@@ -78,8 +79,6 @@ def _preliminary_score(prediction: Prediction) -> float:
     data_quality = max(0.0, min(float(reasons.get("data_quality_score") or 0.0), 100.0))
     sample_confidence = max(0.0, min(float(reasons.get("venue_sample_confidence") or 0.0), 1.0)) * 100.0
 
-    # Sprint 7.8: probability + structural score dominate discovery. Odds/EV are
-    # useful but cannot veto an unpriced official senior fixture.
     composite = (
         0.31 * score
         + 0.31 * probability
@@ -93,7 +92,13 @@ def _preliminary_score(prediction: Prediction) -> float:
     return round(composite, 3)
 
 
-def _entry_for_prediction(prediction: Prediction, rule: CandidatePoolRule, *, broad_fill: bool = False) -> CandidatePoolEntry | None:
+def _entry_for_prediction(
+    prediction: Prediction,
+    rule: CandidatePoolRule,
+    *,
+    broad_fill: bool = False,
+    baseline_fill: bool = False,
+) -> CandidatePoolEntry | None:
     if classify_competition(prediction.fixture).excluded:
         return None
 
@@ -125,7 +130,19 @@ def _entry_for_prediction(prediction: Prediction, rule: CandidatePoolRule, *, br
             (probability >= soft_floor and score >= DISCOVERY_SOFT_SCORE)
             or (score >= DISCOVERY_NEAR_SCORE and data_quality >= DISCOVERY_DATA_QUALITY)
         )
-        if not (near_probability or strong_score or near_score_with_quality or existing_value or broad_professional_signal):
+        baseline_professional_signal = baseline_fill and (
+            probability >= DISCOVERY_BASELINE_PROBABILITY
+            or score >= DISCOVERY_BASELINE_SCORE
+            or data_quality >= DISCOVERY_BASELINE_DATA_QUALITY
+        )
+        if not (
+            near_probability
+            or strong_score
+            or near_score_with_quality
+            or existing_value
+            or broad_professional_signal
+            or baseline_professional_signal
+        ):
             return None
 
     reasons: list[str] = []
@@ -135,6 +152,8 @@ def _entry_for_prediction(prediction: Prediction, rule: CandidatePoolRule, *, br
         reasons.append("near_premium_probability")
     elif broad_fill and probability >= soft_floor:
         reasons.append("broad_probability_recall")
+    elif baseline_fill and probability >= DISCOVERY_BASELINE_PROBABILITY:
+        reasons.append("baseline_probability_recall")
     if prediction.edge is not None and float(prediction.edge) >= rule.min_edge:
         reasons.append("edge")
     if prediction.expected_value is not None and float(prediction.expected_value) >= rule.min_ev:
@@ -143,7 +162,11 @@ def _entry_for_prediction(prediction: Prediction, rule: CandidatePoolRule, *, br
         reasons.append("professional_near_score")
     if broad_fill and score >= DISCOVERY_SOFT_SCORE:
         reasons.append("broad_professional_recall")
-    if prediction.market_odds is None and probability >= soft_floor:
+    if baseline_fill and (
+        score >= DISCOVERY_BASELINE_SCORE or data_quality >= DISCOVERY_BASELINE_DATA_QUALITY
+    ):
+        reasons.append("senior_baseline_recall")
+    if prediction.market_odds is None and probability >= DISCOVERY_BASELINE_PROBABILITY:
         reasons.append("missing_odds_candidate")
     if not reasons:
         return None
@@ -156,6 +179,12 @@ def _entry_for_prediction(prediction: Prediction, rule: CandidatePoolRule, *, br
     )
 
 
+def _put_best(store: dict[int, CandidatePoolEntry], entry: CandidatePoolEntry) -> None:
+    previous = store.get(entry.fixture_id)
+    if previous is None or entry.preliminary_score > previous.preliminary_score:
+        store[entry.fixture_id] = entry
+
+
 def high_recall_candidate_pool(
     target_date: date,
     *,
@@ -164,64 +193,77 @@ def high_recall_candidate_pool(
 ) -> list[CandidatePoolEntry]:
     """Return a broad official-senior candidate pool for pre-Premium research.
 
-    Sprint 7.8 uses two passes:
-    1) normal near-Premium discovery;
-    2) if too few fixtures survive, a softer professional recall pass fills the
-       pool toward 24-30 fixtures. Reserve/youth/women/lower-quality competitions
-       remain excluded. Final odds, Deep, calibrated Edge/EV, reliability and
-       Premium score gates are NOT relaxed here.
+    Sprint 7.8.1 uses three passes over all BTTS/Over predictions for the date:
+    1) near-Premium signals;
+    2) softer professional recall;
+    3) guaranteed senior baseline fill toward 24-30 unique fixtures.
+
+    The third pass fixes the Sprint 7.8 issue where the SQL pre-filter itself
+    prevented the pool from ever reaching the requested recall floor. Excluded
+    competitions remain excluded, and none of the final Premium gates change.
     """
     rule = rule or CandidatePoolRule()
     start, end = _bounds(target_date)
     future_start = max(start, timezone.now())
 
+    # Important: do NOT pre-filter by probability/score here. Doing so was the
+    # hidden bottleneck in 7.8. We need the full official-senior universe for the
+    # baseline fill, then we rank it cheaply in Python before expensive odds/Deep.
     predictions = list(
         Prediction.objects.select_related(
             "fixture",
             "fixture__competition_ref",
             "fixture__home_team",
             "fixture__away_team",
-        )
-        .filter(
+        ).filter(
             model_version=model_version,
             fixture__kickoff__gte=future_start,
             fixture__kickoff__lt=end,
             market__in=("BTTS", "OVER_2_5"),
         )
-        .filter(
-            Q(score__gte=DISCOVERY_SOFT_SCORE)
-            | Q(edge__gte=rule.min_edge)
-            | Q(expected_value__gte=rule.min_ev)
-            | Q(probability__gte=min(DISCOVERY_SOFT_BTTS, DISCOVERY_SOFT_OVER25))
-        )
     )
 
     best_by_fixture: dict[int, CandidatePoolEntry] = {}
-    for prediction in predictions:
-        entry = _entry_for_prediction(prediction, rule, broad_fill=False)
-        if entry is None:
-            continue
-        previous = best_by_fixture.get(entry.fixture_id)
-        if previous is None or entry.preliminary_score > previous.preliminary_score:
-            best_by_fixture[entry.fixture_id] = entry
 
-    # Broad professional fill: only activates when the strict discovery pass is
-    # too narrow. This is the key Sprint 7.8 change that prevents 100+ fixtures
-    # collapsing to 5-7 before odds are even inspected.
-    target = min(max(DISCOVERY_MIN_FIXTURES, DISCOVERY_TARGET_FIXTURES), max(1, int(rule.limit)))
+    for prediction in predictions:
+        entry = _entry_for_prediction(prediction, rule)
+        if entry is not None:
+            _put_best(best_by_fixture, entry)
+
+    target = min(DISCOVERY_TARGET_FIXTURES, max(1, int(rule.limit)))
+    minimum = min(DISCOVERY_MIN_FIXTURES, target)
+
     if len(best_by_fixture) < target and not rule.require_premium_value_odds:
         broad_candidates: list[CandidatePoolEntry] = []
         for prediction in predictions:
-            if prediction.fixture_id in best_by_fixture:
-                continue
             entry = _entry_for_prediction(prediction, rule, broad_fill=True)
             if entry is not None:
                 broad_candidates.append(entry)
-        broad_candidates.sort(key=lambda item: (item.preliminary_score, len(item.entry_reasons)), reverse=True)
+        broad_candidates.sort(
+            key=lambda item: (item.preliminary_score, len(item.entry_reasons)),
+            reverse=True,
+        )
         for entry in broad_candidates:
-            previous = best_by_fixture.get(entry.fixture_id)
-            if previous is None or entry.preliminary_score > previous.preliminary_score:
-                best_by_fixture[entry.fixture_id] = entry
+            _put_best(best_by_fixture, entry)
+            if len(best_by_fixture) >= target:
+                break
+
+    # Guaranteed senior baseline fill. This pass is intentionally permissive but
+    # still excludes reserves/youth/women/lower-quality competitions through
+    # classify_competition. It only decides who receives odds/rescore; it cannot
+    # create a Premium selection by itself.
+    if len(best_by_fixture) < minimum and not rule.require_premium_value_odds:
+        baseline_candidates: list[CandidatePoolEntry] = []
+        for prediction in predictions:
+            entry = _entry_for_prediction(prediction, rule, baseline_fill=True)
+            if entry is not None:
+                baseline_candidates.append(entry)
+        baseline_candidates.sort(
+            key=lambda item: (item.preliminary_score, len(item.entry_reasons)),
+            reverse=True,
+        )
+        for entry in baseline_candidates:
+            _put_best(best_by_fixture, entry)
             if len(best_by_fixture) >= target:
                 break
 
