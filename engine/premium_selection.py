@@ -43,13 +43,22 @@ FRAGILE_OVER_MIN_ODDS = 2.00
 FRAGILE_OVER_MAX_COMBINED_BTTS = 0.50
 
 # Sprint 7.7 - Market disagreement guard.
-# A large model-vs-market probability gap is not an automatic rejection: it can
-# be genuine value. It does, however, lower effective reliability and rank so
-# an overconfident raw estimate cannot dominate the Premium list unchecked.
 DISAGREEMENT_FREE_GAP = 0.12
 DISAGREEMENT_MAX_GAP = 0.30
 DISAGREEMENT_MAX_RELIABILITY_PENALTY = 0.10
 DISAGREEMENT_MAX_RANK_PENALTY = 8.0
+
+# Sprint 7.9 - Venue Specific Contradiction Guard.
+# Recent local-at-home / visitor-away evidence is intentionally more important
+# than broad/general form. A strong side may not drag a weak venue side into a
+# Premium Over/BTTS selection by itself.
+VENUE_RECENT_MIN_SAMPLE = 5
+VENUE_WEAK_RECENT_RATE = 0.40
+VENUE_WEAK_LONG_RATE = 0.50
+VENUE_STRONG_RECENT_RATE = 0.70
+VENUE_SOFT_TARGET = 0.60
+VENUE_MAX_RELIABILITY_PENALTY = 0.06
+VENUE_MAX_RANK_PENALTY = 7.0
 
 
 class DailyPremiumSelector:
@@ -95,15 +104,98 @@ class DailyPremiumSelector:
         }
 
     @classmethod
-    def _market_eligible_deep_preference(cls, prediction: Prediction) -> bool:
-        """Sprint 7.7: Deep preference is evaluated only among bettable markets.
+    def _venue_contradiction_metrics(cls, prediction: Prediction) -> dict:
+        evidence = (prediction.reasons or {}).get("deep_analysis_evidence") or {}
+        if prediction.market == "OVER_2_5":
+            long_keys = ("home_over25_rate", "away_over25_rate")
+            recent_keys = ("home_recent_over25_rate", "away_recent_over25_rate")
+        elif prediction.market == "BTTS":
+            long_keys = ("home_btts_rate", "away_btts_rate")
+            recent_keys = ("home_recent_btts_rate", "away_recent_btts_rate")
+        else:
+            return {
+                "blocked": False,
+                "severity": 0.0,
+                "reliability_penalty": 0.0,
+                "rank_penalty": 0.0,
+                "weak_side": None,
+            }
 
-        If this market is the original Deep preferred market, it passes. If it
-        is not, it may act as the fallback only when the original preferred
-        sibling for the same fixture/model is outside Premium odds (or has no
-        usable price). This fixes the deadlock where an unbettable 1.38 Over
-        blocked a valid 1.62 BTTS without weakening any value/EV/reliability gate.
-        """
+        try:
+            home_n = int(evidence.get("home_recent_n") or 0)
+            away_n = int(evidence.get("away_recent_n") or 0)
+            home_long = float(evidence.get(long_keys[0]))
+            away_long = float(evidence.get(long_keys[1]))
+            home_recent = float(evidence.get(recent_keys[0]))
+            away_recent = float(evidence.get(recent_keys[1]))
+        except (TypeError, ValueError):
+            return {
+                "blocked": False,
+                "severity": 0.0,
+                "reliability_penalty": 0.0,
+                "rank_penalty": 0.0,
+                "weak_side": None,
+            }
+
+        if home_n < VENUE_RECENT_MIN_SAMPLE or away_n < VENUE_RECENT_MIN_SAMPLE:
+            return {
+                "blocked": False,
+                "severity": 0.0,
+                "reliability_penalty": 0.0,
+                "rank_penalty": 0.0,
+                "weak_side": None,
+            }
+
+        if home_recent <= away_recent:
+            weak_side = "home"
+            weak_recent, weak_long, strong_recent = home_recent, home_long, away_recent
+        else:
+            weak_side = "away"
+            weak_recent, weak_long, strong_recent = away_recent, away_long, home_recent
+
+        shortfall = max(0.0, VENUE_SOFT_TARGET - weak_recent)
+        severity = min(1.0, shortfall / VENUE_SOFT_TARGET)
+        reliability_penalty = severity * VENUE_MAX_RELIABILITY_PENALTY
+        rank_penalty = severity * VENUE_MAX_RANK_PENALTY
+
+        # Severe one-sided contradiction. Example: local is only 2/5 (40%) at
+        # home while the visitor is >=70% away, and the weak side also lacks a
+        # supportive 10-match venue baseline. This is a hard Premium veto.
+        blocked = (
+            weak_recent <= VENUE_WEAK_RECENT_RATE
+            and weak_long <= VENUE_WEAK_LONG_RATE
+            and strong_recent >= VENUE_STRONG_RECENT_RATE
+        )
+
+        # BTTS also needs both teams capable of contributing. A recent failed-
+        # to-score problem on the weak venue side strengthens the veto.
+        if prediction.market == "BTTS":
+            try:
+                weak_fts = float(
+                    evidence.get(
+                        "home_recent_failed_to_score_rate"
+                        if weak_side == "home"
+                        else "away_recent_failed_to_score_rate"
+                    )
+                )
+            except (TypeError, ValueError):
+                weak_fts = 0.0
+            if weak_recent <= VENUE_WEAK_RECENT_RATE and weak_fts >= 0.40 and strong_recent >= 0.60:
+                blocked = True
+
+        return {
+            "blocked": blocked,
+            "severity": round(severity, 4),
+            "reliability_penalty": round(reliability_penalty, 4),
+            "rank_penalty": round(rank_penalty, 2),
+            "weak_side": weak_side,
+            "weak_recent_rate": round(weak_recent, 3),
+            "weak_long_rate": round(weak_long, 3),
+            "strong_recent_rate": round(strong_recent, 3),
+        }
+
+    @classmethod
+    def _market_eligible_deep_preference(cls, prediction: Prediction) -> bool:
         reasons = prediction.reasons or {}
         if reasons.get("deep_preferred_market") is True:
             return True
@@ -121,8 +213,6 @@ class DailyPremiumSelector:
         if not preferred_siblings:
             return False
 
-        # A non-preferred market is a fallback only when every Deep-preferred
-        # sibling is operationally unavailable under the hard Premium odds rule.
         for sibling in preferred_siblings:
             if sibling.market_odds is not None and is_premium_value_odds(sibling.market_odds):
                 return False
@@ -167,9 +257,13 @@ class DailyPremiumSelector:
 
         calibration = cls.calibrator.calibrate(prediction)
         disagreement = cls._disagreement_metrics(prediction)
+        venue = cls._venue_contradiction_metrics(prediction)
         if not calibration.premium_reliable:
             return False
-        if disagreement["effective_reliability"] < PREMIUM_MIN_RELIABILITY:
+        effective_reliability = disagreement["effective_reliability"] - venue["reliability_penalty"]
+        if effective_reliability < PREMIUM_MIN_RELIABILITY:
+            return False
+        if venue["blocked"]:
             return False
         if calibration.raw_probability < cls._base_probability_floor(prediction.market):
             return False
@@ -204,12 +298,23 @@ class DailyPremiumSelector:
 
         calibration = cls.calibrator.calibrate(prediction)
         disagreement = cls._disagreement_metrics(prediction)
+        venue = cls._venue_contradiction_metrics(prediction)
         if calibration.reliability < PREMIUM_MIN_RELIABILITY:
             out.append(f"reliability:{calibration.reliability:.3f}")
+        effective_reliability = disagreement["effective_reliability"] - venue["reliability_penalty"]
         if disagreement["effective_reliability"] < PREMIUM_MIN_RELIABILITY:
             out.append(
                 f"disagreement_reliability:{disagreement['effective_reliability']:.3f}"
                 f"/gap:{disagreement['gap']:.3f}"
+            )
+        if effective_reliability < PREMIUM_MIN_RELIABILITY:
+            out.append(f"venue_reliability:{effective_reliability:.3f}")
+        if venue["blocked"]:
+            out.append(
+                f"venue_specific_contradiction:{venue.get('weak_side')}"
+                f"/recent:{venue.get('weak_recent_rate')}"
+                f"/baseline:{venue.get('weak_long_rate')}"
+                f"/strong:{venue.get('strong_recent_rate')}"
             )
         if calibration.raw_probability < cls._base_probability_floor(prediction.market):
             out.append(f"raw_probability:{calibration.raw_probability:.3f}")
@@ -229,11 +334,15 @@ class DailyPremiumSelector:
             return None
         calibration = cls.calibrator.calibrate(prediction)
         disagreement = cls._disagreement_metrics(prediction)
+        venue = cls._venue_contradiction_metrics(prediction)
         probability = calibration.raw_probability
         score = float(prediction.score)
         edge = calibration.calibrated_edge
         ev = calibration.reliable_ev
-        reliability = disagreement["effective_reliability"]
+        reliability = max(
+            0.0,
+            disagreement["effective_reliability"] - venue["reliability_penalty"],
+        )
 
         for rule in TIER_RULES:
             effective_score = rule.min_score
@@ -253,11 +362,16 @@ class DailyPremiumSelector:
     def _rank_score(cls, prediction: Prediction) -> tuple[float, dict]:
         calibration = cls.calibrator.calibrate(prediction)
         disagreement = cls._disagreement_metrics(prediction)
+        venue = cls._venue_contradiction_metrics(prediction)
         score_component = max(0.0, min(float(prediction.score), 100.0))
         probability_component = calibration.raw_probability * 100.0
         ev_component = min(max(0.0, calibration.reliable_ev) / 0.20, 1.0) * 100.0
         edge_component = min(max(0.0, calibration.calibrated_edge) / 0.12, 1.0) * 100.0
-        reliability_component = disagreement["effective_reliability"] * 100.0
+        effective_reliability = max(
+            0.0,
+            disagreement["effective_reliability"] - venue["reliability_penalty"],
+        )
+        reliability_component = effective_reliability * 100.0
 
         base_composite = (
             0.22 * score_component
@@ -266,7 +380,10 @@ class DailyPremiumSelector:
             + 0.13 * probability_component
             + 0.15 * reliability_component
         )
-        composite = max(0.0, base_composite - disagreement["rank_penalty"])
+        composite = max(
+            0.0,
+            base_composite - disagreement["rank_penalty"] - venue["rank_penalty"],
+        )
         reasons = prediction.reasons or {}
         rationale = {
             "score_component": round(score_component, 2),
@@ -292,15 +409,18 @@ class DailyPremiumSelector:
             "reliable_expected_value": calibration.reliable_ev,
             "probability_reliability": calibration.reliability,
             "effective_reliability_after_disagreement": round(disagreement["effective_reliability"], 4),
+            "effective_reliability_after_venue": round(effective_reliability, 4),
             "model_market_probability_gap": round(disagreement["gap"], 4),
             "disagreement_severity": round(disagreement["severity"], 4),
             "disagreement_reliability_penalty": round(disagreement["reliability_penalty"], 4),
             "disagreement_rank_penalty": round(disagreement["rank_penalty"], 2),
-            "rank_before_disagreement_penalty": round(base_composite, 2),
+            "venue_specific_contradiction": venue,
+            "venue_rank_penalty": round(venue["rank_penalty"], 2),
+            "rank_before_penalties": round(base_composite, 2),
             "odds_policy": "Premium Value 1.60-2.40",
-            "value_gate": "Sprint 7.7 market-eligible Deep + raw probability + calibrated edge/EV + disagreement + fragile-Over guard",
+            "value_gate": "Sprint 7.9 market-eligible Deep + venue-specific home/away contradiction + calibrated edge/EV + disagreement + fragile-Over guard",
             "fragile_over25_guard": cls._fragile_over25_profile(prediction),
-            "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*raw_probability + 0.15*effective_reliability - disagreement_penalty",
+            "formula": "0.22*deep_score + 0.30*reliable_ev + 0.20*calibrated_edge + 0.13*raw_probability + 0.15*effective_reliability - disagreement_penalty - venue_penalty",
         }
         return round(composite, 2), rationale
 
