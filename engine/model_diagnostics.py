@@ -42,9 +42,9 @@ FAILURE_LABELS = {
     "premium_safe_odds": "Premium Safe: cuota 1.30-1.59; no compite por Top 3",
     "odds_above_premium_max": "Cuota > 2.40; fuera de Premium Value",
     "odds_below_safe_floor": "Cuota < 1.30; descartado",
-    "edge_below_premium_floor": "Edge calibrado por debajo de 5%",
-    "ev_below_premium_floor": "EV fiable por debajo de 3%",
-    "probability_below_premium_floor": "Probabilidad por debajo del piso Sprint 7.7",
+    "edge_below_premium_floor": "Edge calibrado por debajo de 5%; Deep no requerido",
+    "ev_below_premium_floor": "EV fiable por debajo de 3%; Deep no requerido",
+    "probability_below_premium_floor": "Probabilidad por debajo del piso Sprint 7.7; Deep no requerido",
     "score_below_dynamic_floor": "Score final por debajo del piso dinámico 76",
     "deep_analysis_pending": "Deep Analysis pendiente/no disponible",
     "deep_market_not_preferred": "Otro mercado apostable del partido tiene mejor Deep",
@@ -100,6 +100,30 @@ class ModelDiagnosticsService:
             "failures": reasons.get("deep_analysis_failures") or [],
         }
 
+    @staticmethod
+    def _definitive_pre_deep_reason(selector_reasons: list[str]) -> str | None:
+        """Return a rejection that makes Deep Analysis unnecessary.
+
+        Sprint 7.9.3: diagnostics must not label a market as 'Deep pending' when
+        it is already mathematically/structurally unable to become Premium.
+        These reasons are independent of Deep and therefore have precedence.
+        """
+        priority_prefixes = (
+            "competition:",
+            "v8_gates",
+            "no_odds",
+            "odds_outside_1.60_2.40",
+            "raw_probability:",
+            "calibrated_edge:",
+            "reliable_ev:",
+            "fragile_over25_two_goal_ceiling",
+        )
+        for prefix in priority_prefixes:
+            for reason in selector_reasons:
+                if reason == prefix or reason.startswith(prefix):
+                    return reason
+        return None
+
     def _reason_code(self, prediction: Prediction) -> str:
         reasons = prediction.reasons or {}
         failures = list(reasons.get("v8_gate_failures") or [])
@@ -121,7 +145,14 @@ class ModelDiagnosticsService:
         )
         if not selector_reasons:
             return "premium_threshold_combination"
-        first = selector_reasons[0]
+
+        # Sprint 7.9.3: a definitive pre-Deep rejection outranks deep_missing.
+        # Example: Central Stallions-Tainan City had negative EV. Deep was never
+        # required, so the dashboard must show the EV rejection, not a false
+        # 'Deep Analysis pendiente/no disponible' warning.
+        definitive = self._definitive_pre_deep_reason(selector_reasons)
+        first = definitive or selector_reasons[0]
+
         if first == "deep_missing":
             return "deep_analysis_pending"
         if first == "deep_rejected":
@@ -240,6 +271,14 @@ class ModelDiagnosticsService:
             if main == "missing_market_odds":
                 continue
 
+            # Sprint 7.9.3: if another hard/value rule already rejects the row,
+            # a missing Deep result is intentional and must be displayed as not
+            # required rather than pending. Genuine Deep pending remains visible
+            # only when Deep is the actual blocker.
+            display_deep_status = deep.get("status")
+            if display_deep_status == "pending" and main != "deep_analysis_pending":
+                display_deep_status = "not_required"
+
             row = {
                 "prediction": prediction,
                 "reason_code": main,
@@ -251,7 +290,7 @@ class ModelDiagnosticsService:
                 "low_score_rate": (reasons.get("market_intelligence_evidence") or {}).get("combined_low_score_rate"),
                 "sample_confidence": reasons.get("venue_sample_confidence"),
                 "evidence_penalty": reasons.get("evidence_penalty"),
-                "deep_status": deep.get("status"),
+                "deep_status": display_deep_status,
                 "deep_score": deep.get("score"),
                 "deep_preferred": deep.get("preferred_market"),
                 "in_high_recall_pool": prediction.id in pool_prediction_ids,
