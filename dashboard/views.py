@@ -126,49 +126,25 @@ def _selected_date_operational(target_date, picks):
 
 
 def _validated_pending_odds(*, limit: int = 20):
-    """Show missing odds only when the prediction is genuinely close to Premium.
-
-    Sprint 7.8 broad recall intentionally explores weak/neutral rows too. Those
-    rows are useful internally, but they must not pollute the developer UI as
-    actionable 'pending odds'.
-    """
+    """Show missing odds only when the prediction is genuinely close to Premium."""
     today = timezone.localdate()
-    pool = high_recall_candidate_pool(
-        today,
-        rule=CandidatePoolRule(limit=200),
-        model_version=V8_MODEL_VERSION,
-    )
+    pool = high_recall_candidate_pool(today, rule=CandidatePoolRule(limit=200), model_version=V8_MODEL_VERSION)
     prediction_ids = [entry.prediction_id for entry in pool]
     if not prediction_ids:
         return []
-    qs = (
-        Prediction.objects.select_related(
-            "fixture",
-            "fixture__home_team",
-            "fixture__away_team",
-            "fixture__competition_ref",
-        )
-        .filter(
-            id__in=prediction_ids,
-            model_version=V8_MODEL_VERSION,
-            fixture__kickoff__gte=timezone.now(),
-            market_odds__isnull=True,
-            score__gte=70.0,
-        )
-        .order_by("-score", "-probability", "fixture__kickoff")
-    )
+    qs = Prediction.objects.select_related("fixture", "fixture__home_team", "fixture__away_team", "fixture__competition_ref").filter(
+        id__in=prediction_ids, model_version=V8_MODEL_VERSION, fixture__kickoff__gte=timezone.now(), market_odds__isnull=True, score__gte=70.0,
+    ).order_by("-score", "-probability", "fixture__kickoff")
     rows = []
     for prediction in qs.iterator(chunk_size=100):
         if classify_competition(prediction.fixture).excluded:
             continue
         p = float(prediction.probability)
-        if prediction.market == "BTTS":
-            if p < 0.54:
-                continue
-        elif prediction.market == "OVER_2_5":
-            if p < 0.56:
-                continue
-        else:
+        if prediction.market == "BTTS" and p < 0.54:
+            continue
+        if prediction.market == "OVER_2_5" and p < 0.56:
+            continue
+        if prediction.market not in {"BTTS", "OVER_2_5"}:
             continue
         rows.append(prediction)
         if len(rows) >= limit:
@@ -177,50 +153,29 @@ def _validated_pending_odds(*, limit: int = 20):
 
 
 def _human_current_rejection_reason(prediction: Prediction) -> str:
-    """Translate Sprint 7.7/7.8 selector diagnostics into dashboard language."""
     reasons = DailyPremiumSelector.rejection_reasons(prediction, score_floor=76.0)
     if not reasons:
         return "Cumple filtros Premium; quedó fuera solo por ranking del Top 3"
-
     labels = []
     for reason in reasons:
         if reason.startswith("competition:"):
             labels.append("Competición fuera del universo profesional")
-        elif reason == "v8_gates":
-            labels.append("No supera validaciones estructurales V8")
-        elif reason == "deep_missing":
-            labels.append("Deep Analysis no disponible")
-        elif reason == "deep_rejected":
-            labels.append("Deep Analysis rechazó el perfil")
-        elif reason == "not_market_eligible_deep_preferred":
-            labels.append("Otro mercado apostable del partido tiene mejor Deep")
-        elif reason == "no_odds":
-            labels.append("Sin cuota operativa")
-        elif reason == "odds_outside_1.60_2.40":
-            labels.append("Cuota fuera de 1.60–2.40")
-        elif reason.startswith("reliability:"):
-            value = reason.split(":", 1)[1]
-            labels.append(f"Reliability insuficiente ({value})")
-        elif reason.startswith("disagreement_reliability:"):
-            labels.append("Reliability penalizada por desacuerdo modelo/mercado")
+        elif reason == "v8_gates": labels.append("No supera validaciones estructurales V8")
+        elif reason == "deep_missing": labels.append("Deep Analysis no disponible")
+        elif reason == "deep_rejected": labels.append("Deep Analysis rechazó el perfil")
+        elif reason == "not_market_eligible_deep_preferred": labels.append("Otro mercado apostable del partido tiene mejor Deep")
+        elif reason == "no_odds": labels.append("Sin cuota operativa")
+        elif reason == "odds_outside_1.60_2.40": labels.append("Cuota fuera de 1.60–2.40")
+        elif reason.startswith("reliability:"): labels.append(f"Reliability insuficiente ({reason.split(':', 1)[1]})")
+        elif reason.startswith("disagreement_reliability:"): labels.append("Reliability penalizada por desacuerdo modelo/mercado")
         elif reason.startswith("raw_probability:"):
-            value = float(reason.split(":", 1)[1])
-            floor = 0.54 if prediction.market == "BTTS" else 0.56
-            label = "BTTS" if prediction.market == "BTTS" else "Over 2.5"
+            value = float(reason.split(":", 1)[1]); floor = 0.54 if prediction.market == "BTTS" else 0.56; label = "BTTS" if prediction.market == "BTTS" else "Over 2.5"
             labels.append(f"Probabilidad {label} {value:.1%} < piso Sprint 7.7 {floor:.0%}")
-        elif reason.startswith("calibrated_edge:"):
-            value = float(reason.split(":", 1)[1])
-            labels.append(f"Edge calibrado {value:.1%} < 5%")
-        elif reason.startswith("reliable_ev:"):
-            value = float(reason.split(":", 1)[1])
-            labels.append(f"EV fiable {value:.1%} < 3%")
-        elif reason == "fragile_over25_two_goal_ceiling":
-            labels.append("Over frágil: riesgo de techo de 2 goles")
-        elif reason.startswith("score:"):
-            value = float(reason.split(":", 1)[1])
-            labels.append(f"Score final {value:.1f} < piso dinámico 76")
-        else:
-            labels.append(reason)
+        elif reason.startswith("calibrated_edge:"): labels.append(f"Edge calibrado {float(reason.split(':', 1)[1]):.1%} < 5%")
+        elif reason.startswith("reliable_ev:"): labels.append(f"EV fiable {float(reason.split(':', 1)[1]):.1%} < 3%")
+        elif reason == "fragile_over25_two_goal_ceiling": labels.append("Over frágil: riesgo de techo de 2 goles")
+        elif reason.startswith("score:"): labels.append(f"Score final {float(reason.split(':', 1)[1]):.1f} < piso dinámico 76")
+        else: labels.append(reason)
     return "; ".join(labels)
 
 
@@ -231,137 +186,72 @@ def health(request):
 def dashboard_home(request):
     _expire_stale_generation_jobs()
     selected_date = _parse_target_date(request.GET.get("date")) or timezone.localdate()
-    service = DashboardService()
-    context = service.build()
-    picks = _selected_date_picks(selected_date)
-    context["premium_picks"] = picks
-    context["operational"] = _selected_date_operational(selected_date, picks)
-    context["selected_date"] = selected_date
-    context["selected_date_iso"] = selected_date.isoformat()
-    context["today_iso"] = timezone.localdate().isoformat()
-    context["pipeline_trigger_configured"] = GitHubPipelineTrigger().configured and bool(
-        os.getenv("PIPELINE_TRIGGER_PIN", "").strip()
-    )
-    active_job = PremiumGenerationJob.objects.filter(
-        target_date=selected_date,
-        status__in=PremiumGenerationJob.ACTIVE_STATUSES,
-    ).first()
+    service = DashboardService(); context = service.build(); picks = _selected_date_picks(selected_date)
+    context["premium_picks"] = picks; context["operational"] = _selected_date_operational(selected_date, picks)
+    context["selected_date"] = selected_date; context["selected_date_iso"] = selected_date.isoformat(); context["today_iso"] = timezone.localdate().isoformat()
+    context["pipeline_trigger_configured"] = GitHubPipelineTrigger().configured and bool(os.getenv("PIPELINE_TRIGGER_PIN", "").strip())
+    active_job = PremiumGenerationJob.objects.filter(target_date=selected_date, status__in=PremiumGenerationJob.ACTIVE_STATUSES).first()
     context["active_generation_job_id"] = active_job.id if active_job else None
     return render(request, "dashboard/index.html", context)
 
 
 def developer_dashboard(request):
-    service = DashboardService()
-    context = service.build_developer()
-    context["pending_odds"] = _validated_pending_odds(limit=20)
-    context["model_diagnostics"] = ModelDiagnosticsService().build()
-    context["deep_premium"] = service.premium_picks(limit=3)
-
-    selected_prediction_ids = set(
-        DailyPremiumSelection.objects.filter(
-            model_version=V8_MODEL_VERSION,
-            prediction__fixture__kickoff__gte=timezone.now(),
-        ).values_list("prediction_id", flat=True)
-    )
-    cleaned_near = []
-    for row in context.get("near_premium", []):
-        prediction = row["prediction"]
+    service = DashboardService(); context = service.build_developer()
+    context["pending_odds"] = _validated_pending_odds(limit=20); context["model_diagnostics"] = ModelDiagnosticsService().build(); context["deep_premium"] = service.premium_picks(limit=3)
+    selected_prediction_ids = set(DailyPremiumSelection.objects.filter(model_version=V8_MODEL_VERSION, prediction__fixture__kickoff__gte=timezone.now()).values_list("prediction_id", flat=True))
+    alternates, rejected = [], []
+    for source_row in context.get("near_premium", []):
+        prediction = source_row["prediction"]
         if prediction.id in selected_prediction_ids:
             continue
-        row = dict(row)
-        row["reason"] = _human_current_rejection_reason(prediction)
-        cleaned_near.append(row)
-    context["near_premium"] = cleaned_near
-
+        row = dict(source_row); reasons = DailyPremiumSelector.rejection_reasons(prediction, score_floor=76.0)
+        if not reasons:
+            row["reason"] = "Cumple todos los filtros Premium; suplente por ranking del Top 3"
+            alternates.append(row)
+        else:
+            row["reason"] = _human_current_rejection_reason(prediction)
+            rejected.append(row)
+    alternates.sort(key=lambda row: (float(row["prediction"].score or 0), float(row["prediction"].expected_value or 0)), reverse=True)
+    rejected.sort(key=lambda row: float(row["prediction"].score or 0), reverse=True)
+    context["premium_alternates"] = alternates
+    context["near_premium"] = rejected
     return render(request, "dashboard/developer.html", context)
 
 
 @require_POST
 def generate_premium_picks(request):
-    _expire_stale_generation_jobs()
-    expected_pin = os.getenv("PIPELINE_TRIGGER_PIN", "").strip()
-    if not expected_pin:
-        return JsonResponse({"ok": False, "message": "PIPELINE_TRIGGER_PIN no está configurado en Render."}, status=503)
-    try:
-        payload = json.loads(request.body.decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError):
-        return JsonResponse({"ok": False, "message": "Solicitud inválida."}, status=400)
+    _expire_stale_generation_jobs(); expected_pin = os.getenv("PIPELINE_TRIGGER_PIN", "").strip()
+    if not expected_pin: return JsonResponse({"ok": False, "message": "PIPELINE_TRIGGER_PIN no está configurado en Render."}, status=503)
+    try: payload = json.loads(request.body.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError): return JsonResponse({"ok": False, "message": "Solicitud inválida."}, status=400)
     supplied_pin = str(payload.get("pin") or "").strip()
-    if not hmac.compare_digest(supplied_pin, expected_pin):
-        return JsonResponse({"ok": False, "message": "PIN incorrecto."}, status=403)
-
+    if not hmac.compare_digest(supplied_pin, expected_pin): return JsonResponse({"ok": False, "message": "PIN incorrecto."}, status=403)
     target_date = _parse_target_date(payload.get("target_date"), default_today=False)
-    if target_date is None:
-        return JsonResponse({"ok": False, "message": "Selecciona una fecha válida para los partidos."}, status=400)
-    if target_date < timezone.localdate():
-        return JsonResponse({"ok": False, "message": "La generación operativa solo admite hoy o fechas futuras."}, status=400)
-
-    active_job = PremiumGenerationJob.objects.filter(
-        target_date=target_date,
-        status__in=PremiumGenerationJob.ACTIVE_STATUSES,
-    ).first()
-    if active_job:
-        return JsonResponse({"ok": True, "already_running": True, "message": "Ya hay una generación en curso para esa fecha.", "job_id": active_job.id, "target_date": active_job.target_date.isoformat()})
-    now_ts = time.time()
-    last_trigger = float(request.session.get("premium_trigger_ts", 0) or 0)
-    if now_ts - last_trigger < 45:
-        return JsonResponse({"ok": False, "message": "Espera unos segundos antes de volver a generar."}, status=429)
+    if target_date is None: return JsonResponse({"ok": False, "message": "Selecciona una fecha válida para los partidos."}, status=400)
+    if target_date < timezone.localdate(): return JsonResponse({"ok": False, "message": "La generación operativa solo admite hoy o fechas futuras."}, status=400)
+    active_job = PremiumGenerationJob.objects.filter(target_date=target_date, status__in=PremiumGenerationJob.ACTIVE_STATUSES).first()
+    if active_job: return JsonResponse({"ok": True, "already_running": True, "message": "Ya hay una generación en curso para esa fecha.", "job_id": active_job.id, "target_date": active_job.target_date.isoformat()})
+    now_ts = time.time(); last_trigger = float(request.session.get("premium_trigger_ts", 0) or 0)
+    if now_ts - last_trigger < 45: return JsonResponse({"ok": False, "message": "Espera unos segundos antes de volver a generar."}, status=429)
     mode = _interactive_pipeline_mode(target_date)
-    job = PremiumGenerationJob.objects.create(
-        target_date=target_date,
-        mode=mode,
-        status=PremiumGenerationJob.STATUS_QUEUED,
-        current_stage="QUEUE",
-        progress_pct=0,
-        message=f"Solicitud creada para {target_date.isoformat()}; enviando al worker.",
-        metadata={"source": "dashboard", "interactive_fast": True, "resolved_mode": mode, "selected_date": target_date.isoformat()},
-    )
+    job = PremiumGenerationJob.objects.create(target_date=target_date, mode=mode, status=PremiumGenerationJob.STATUS_QUEUED, current_stage="QUEUE", progress_pct=0, message=f"Solicitud creada para {target_date.isoformat()}; enviando al worker.", metadata={"source": "dashboard", "interactive_fast": True, "resolved_mode": mode, "selected_date": target_date.isoformat()})
     result = GitHubPipelineTrigger().dispatch(target_date=target_date, mode=mode, generation_job_id=job.id)
     if not result.accepted:
-        job.status = PremiumGenerationJob.STATUS_FAILED
-        job.current_stage = "DISPATCH"
-        job.progress_pct = 100
-        job.message = result.message[:255]
-        job.finished_at = timezone.now()
-        job.save(update_fields=["status", "current_stage", "progress_pct", "message", "finished_at"])
+        job.status = PremiumGenerationJob.STATUS_FAILED; job.current_stage = "DISPATCH"; job.progress_pct = 100; job.message = result.message[:255]; job.finished_at = timezone.now(); job.save(update_fields=["status", "current_stage", "progress_pct", "message", "finished_at"])
         return JsonResponse({"ok": False, "message": result.message, "job_id": job.id}, status=502)
-    job.status = PremiumGenerationJob.STATUS_DISPATCHED
-    job.current_stage = "QUEUE"
-    job.progress_pct = 1
-    job.message = f"En cola para {target_date.isoformat()}; modo {mode}, esperando worker de GitHub Actions."
-    job.dispatched_at = timezone.now()
-    job.save(update_fields=["status", "current_stage", "progress_pct", "message", "dispatched_at"])
-    request.session["premium_trigger_ts"] = now_ts
+    job.status = PremiumGenerationJob.STATUS_DISPATCHED; job.current_stage = "QUEUE"; job.progress_pct = 1; job.message = f"En cola para {target_date.isoformat()}; modo {mode}, esperando worker de GitHub Actions."; job.dispatched_at = timezone.now(); job.save(update_fields=["status", "current_stage", "progress_pct", "message", "dispatched_at"]); request.session["premium_trigger_ts"] = now_ts
     return JsonResponse({"ok": True, "message": result.message, "job_id": job.id, "target_date": target_date.isoformat(), "mode": mode})
 
 
 @require_GET
 def premium_generation_status(request):
-    _expire_stale_generation_jobs()
-    raw_job_id = request.GET.get("job_id")
-    job = None
+    _expire_stale_generation_jobs(); raw_job_id = request.GET.get("job_id"); job = None
     if raw_job_id:
-        try:
-            job = PremiumGenerationJob.objects.select_related("pipeline").filter(pk=int(raw_job_id)).first()
-        except (TypeError, ValueError):
-            return JsonResponse({"ok": False, "message": "job_id inválido."}, status=400)
-    if job is None:
-        job = PremiumGenerationJob.objects.select_related("pipeline").first()
-    if job is None:
-        return JsonResponse({"ok": True, "job": None, "premium_count": 0, "stages": []})
+        try: job = PremiumGenerationJob.objects.select_related("pipeline").filter(pk=int(raw_job_id)).first()
+        except (TypeError, ValueError): return JsonResponse({"ok": False, "message": "job_id inválido."}, status=400)
+    if job is None: job = PremiumGenerationJob.objects.select_related("pipeline").first()
+    if job is None: return JsonResponse({"ok": True, "job": None, "premium_count": 0, "stages": []})
     stages = []
-    if job.pipeline_id:
-        stages = [{"name": stage.name, "status": stage.status, "message": stage.message, "duration_seconds": stage.duration_seconds, "records_processed": stage.records_processed} for stage in job.pipeline.stages.all()]
-    premium_count = DailyPremiumSelection.objects.filter(
-        target_date=job.target_date,
-        model_version=V8_MODEL_VERSION,
-        prediction__market_odds__gte=PREMIUM_VALUE_MIN_ODDS,
-        prediction__market_odds__lte=PREMIUM_VALUE_MAX_ODDS,
-        prediction__expected_value__gte=PREMIUM_MIN_EV,
-    ).count()
-    return JsonResponse({
-        "ok": True,
-        "job": {"id": job.id, "status": job.status, "target_date": job.target_date.isoformat(), "current_stage": job.current_stage, "progress_pct": job.progress_pct, "message": job.message, "pipeline_id": job.pipeline_id, "finished": job.finished_at is not None, "mode": job.mode},
-        "premium_count": premium_count,
-        "stages": stages,
-    })
+    if job.pipeline_id: stages = [{"name": stage.name, "status": stage.status, "message": stage.message, "duration_seconds": stage.duration_seconds, "records_processed": stage.records_processed} for stage in job.pipeline.stages.all()]
+    premium_count = DailyPremiumSelection.objects.filter(target_date=job.target_date, model_version=V8_MODEL_VERSION, prediction__market_odds__gte=PREMIUM_VALUE_MIN_ODDS, prediction__market_odds__lte=PREMIUM_VALUE_MAX_ODDS, prediction__expected_value__gte=PREMIUM_MIN_EV).count()
+    return JsonResponse({"ok": True, "job": {"id": job.id, "status": job.status, "target_date": job.target_date.isoformat(), "current_stage": job.current_stage, "progress_pct": job.progress_pct, "message": job.message, "pipeline_id": job.pipeline_id, "finished": job.finished_at is not None, "mode": job.mode}, "premium_count": premium_count, "stages": stages})
