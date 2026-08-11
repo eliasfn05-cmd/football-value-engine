@@ -49,7 +49,7 @@ DEVELOPMENT_TERMS = (
 )
 
 WOMEN_TERMS = (
-    "women", "womens", "women s", "female", "femenino", "femenina", "femminile",
+    "women", "womens", "women s", "female", "femenil", "femenino", "femenina", "femminile",
     "frauen", "dames", "ladies", "w league", "nwsl", "liga f", "superliga femenina",
 )
 
@@ -74,11 +74,6 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 
 
 def _looks_like_reserve_team(name: str | None) -> bool:
-    """Detect common second-team/reserve suffixes without flagging normal club names.
-
-    Examples intentionally excluded: Zamora FC B, Puerto Cabello II, New England II,
-    Austin II, Sporting KC II, Barcelona B, Bayern Munich II.
-    """
     normalized = _normalize(name)
     if not normalized:
         return False
@@ -93,6 +88,24 @@ def _looks_like_reserve_team(name: str | None) -> bool:
     return False
 
 
+def _looks_like_women_team(name: str | None) -> bool:
+    """Detect provider team labels for women's sides even when league metadata is generic.
+
+    Several feeds abbreviate women's teams as a trailing `W` (for example
+    `Toluca W` / `Juárez W`). Competition-only filtering missed those rows and
+    allowed them into the Premium universe. A trailing W is treated as an
+    identity marker; internal/leading W tokens are not blocked to avoid false
+    positives such as normal club names beginning with W.
+    """
+    normalized = _normalize(name)
+    if not normalized:
+        return False
+    if _contains_any(normalized, WOMEN_TERMS):
+        return True
+    tokens = normalized.split()
+    return bool(tokens and tokens[-1] == "w")
+
+
 def classify_competition(fixture: Fixture) -> CompetitionQuality:
     competition = fixture.competition_ref
     fixture_name = fixture.competition or ""
@@ -104,9 +117,12 @@ def classify_competition(fixture: Fixture) -> CompetitionQuality:
     home_name = getattr(getattr(fixture, "home_team", None), "name", "") or ""
     away_name = getattr(getattr(fixture, "away_team", None), "name", "") or ""
 
-    # Team identity is a hard exclusion. This is evaluated before an official
-    # league-name override so a B/II reserve side can never become Premium merely
-    # because it participates in a competition carrying an official-looking name.
+    # Team identity is a hard exclusion and is evaluated before any official
+    # league-name override. Provider metadata can call a competition simply
+    # "Liga MX" while the teams themselves are `Toluca W` / `Juárez W`.
+    if _looks_like_women_team(home_name) or _looks_like_women_team(away_name):
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "women_team_identity")
+
     if _looks_like_reserve_team(home_name) or _looks_like_reserve_team(away_name):
         return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "reserve_or_second_team")
 
