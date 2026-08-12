@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import DailyPremiumSelection, Prediction, PremiumPublicationLedger
+from .premium_risk_guard import PremiumRiskGuard
 from .premium_selection import DYNAMIC_SCORE_FLOORS, DailyPremiumSelector
 from .score_v8 import V8_MODEL_VERSION
 from .value_policy import PREMIUM_MIN_EV
@@ -39,9 +40,10 @@ def fixture_is_operational(fixture) -> bool:
 class PremiumReplacementService:
     """Maintain up to three *currently actionable* Premium picks.
 
-    Sprint 7.9.5 rules:
+    Sprint 7.10 rules:
     - suspended/postponed/cancelled/started/finished fixtures vacate their slot;
     - the best still-eligible candidate is promoted automatically;
+    - final Premium admission applies a strict venue-specific loss-prevention guard;
     - every promoted pick is immutable in PremiumPublicationLedger;
     - promotion metadata is written in DailyPremiumSelection.rationale;
     - the historical ledger is never deleted when the active Top changes.
@@ -103,6 +105,9 @@ class PremiumReplacementService:
         selected_floor = DYNAMIC_SCORE_FLOORS[-1]
         for score_floor in DYNAMIC_SCORE_FLOORS:
             ranked = self.selector._rank_candidates(candidates, score_floor)
+            # Sprint 7.10: broad/global strength may never override a weak
+            # home-at-home or away-at-away recent profile at final admission.
+            ranked = [item for item in ranked if not PremiumRiskGuard.evaluate(item[0]).blocked]
             selected_floor = score_floor
             if self.selector._unique_fixture_count(ranked) >= self.max_picks:
                 break
@@ -119,6 +124,7 @@ class PremiumReplacementService:
         removed = [
             row for row in previous
             if not fixture_is_operational(row.prediction.fixture)
+            or PremiumRiskGuard.evaluate(row.prediction).blocked
         ]
 
         ranked, selected_floor = self._rank_operational_candidates(target_date)
@@ -146,6 +152,12 @@ class PremiumReplacementService:
         for index, (prediction, tier, rank_score, rationale) in enumerate(chosen, start=1):
             rationale = dict(rationale or {})
             rationale["selector_dynamic_floor_used"] = selected_floor
+            risk = PremiumRiskGuard.evaluate(prediction)
+            rationale["sprint_7_10_risk_guard"] = {
+                "blocked": risk.blocked,
+                "code": risk.code,
+                "detail": risk.detail,
+            }
             is_promotion = prediction.id not in previous_ids and bool(removed)
             if is_promotion:
                 rationale.update({
