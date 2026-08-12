@@ -6,7 +6,7 @@ from django.utils import timezone
 from backtesting.premium_settlement import settle_published_premium
 from engine.models import Prediction
 from engine.premium_replacement import PremiumReplacementService
-from engine.premium_selection import DailyPremiumSelector
+from engine.premium_risk_guard import PremiumRiskGuard
 from engine.score_v8 import V8_MODEL_VERSION
 
 
@@ -34,7 +34,7 @@ class Command(BaseCommand):
         selector = replacement.selector
 
         if not rows:
-            self.stdout.write("[premium] NO BET: no prediction cleared Sprint 7.9.5 professional value gates")
+            self.stdout.write("[premium] NO BET: no prediction cleared Sprint 7.10 professional value gates")
             start = timezone.make_aware(datetime.combine(target_date, time.min))
             end = start + timedelta(days=1)
             future_start = max(start, timezone.now())
@@ -54,6 +54,9 @@ class Command(BaseCommand):
             for prediction in near:
                 calibration = selector.calibrator.calibrate(prediction)
                 reject = selector.rejection_reasons(prediction)
+                risk = PremiumRiskGuard.evaluate(prediction)
+                if risk.blocked:
+                    reject.append(f"sprint7.10:{risk.code}:{risk.detail}")
                 fixture = prediction.fixture
                 self.stdout.write(
                     f"[premium-audit] {fixture.home_team.name} vs {fixture.away_team.name} "
@@ -79,4 +82,4 @@ class Command(BaseCommand):
                 f"cal_edge={calibration.calibrated_edge:.3f} reliable_ev={calibration.reliable_ev:.3f} "
                 f"reliability={calibration.reliability:.3f} score={prediction.score}{promotion_suffix}"
             )
-        self.stdout.write(self.style.SUCCESS(f"[premium] selected={len(rows)} ledgered={len(rows)} auto_replacement=enabled"))
+        self.stdout.write(self.style.SUCCESS(f"[premium] selected={len(rows)} ledgered={len(rows)} auto_replacement=enabled sprint7.10_risk_guard=enabled"))
