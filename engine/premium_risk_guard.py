@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .models import Prediction
+from .competition_quality import classify_competition
+from .models import Fixture, Prediction, Team
 
 
 @dataclass(frozen=True)
@@ -16,8 +17,9 @@ class PremiumRiskGuard:
     """Hard loss-prevention guards learned from Premium backtesting.
 
     Sprint 7.10 deliberately gives the last five venue-specific matches more
-    authority than broad form, model probability or apparent EV. These guards
-    are only used for final Premium admission; they do not alter the raw model.
+    authority than broad form, model probability or apparent EV. A second,
+    narrower current-attack check catches BTTS profiles where recent scoring
+    health has deteriorated across all venues.
     """
 
     RECENT_N = 5
@@ -25,6 +27,8 @@ class PremiumRiskGuard:
     BTTS_MIN_RECENT_SIDE = 0.50
     BTTS_MAX_RECENT_FTS = 0.40
     BTTS_STRONG_CLEAN_SHEET = 0.50
+    BTTS_CURRENT_ATTACK_MIN_AVG_GF = 0.80
+    BTTS_CURRENT_ATTACK_MAX_FTS = 0.40
 
     @staticmethod
     def _float(evidence: dict, key: str, default=None):
@@ -35,6 +39,32 @@ class PremiumRiskGuard:
             return default
 
     @classmethod
+    def _current_attack_profile(cls, team: Team, before_fixture: Fixture) -> dict | None:
+        fixtures = (
+            Fixture.objects.filter(kickoff__lt=before_fixture.kickoff)
+            .filter(home_goals__isnull=False, away_goals__isnull=False)
+            .filter(home_team=team) | Fixture.objects.filter(kickoff__lt=before_fixture.kickoff)
+            .filter(home_goals__isnull=False, away_goals__isnull=False)
+            .filter(away_team=team)
+        )
+        fixtures = fixtures.select_related("home_team", "away_team", "competition_ref").order_by("-kickoff")
+        goals_for = []
+        for fixture in fixtures.iterator(chunk_size=50):
+            if classify_competition(fixture).excluded:
+                continue
+            gf = int(fixture.home_goals or 0) if fixture.home_team_id == team.id else int(fixture.away_goals or 0)
+            goals_for.append(gf)
+            if len(goals_for) >= cls.RECENT_N:
+                break
+        if len(goals_for) < cls.RECENT_N:
+            return None
+        return {
+            "n": len(goals_for),
+            "avg_goals_for": sum(goals_for) / len(goals_for),
+            "failed_to_score_rate": sum(1 for value in goals_for if value == 0) / len(goals_for),
+        }
+
+    @classmethod
     def evaluate(cls, prediction: Prediction) -> PremiumRiskDecision:
         evidence = (prediction.reasons or {}).get("deep_analysis_evidence") or {}
         try:
@@ -43,8 +73,8 @@ class PremiumRiskGuard:
         except (TypeError, ValueError):
             home_n = away_n = 0
 
-        # Do not invent a veto without the requested venue sample. The existing
-        # Deep/reliability gates remain responsible for insufficient coverage.
+        # Do not invent a venue veto without the requested five-match sample.
+        # Existing Deep/reliability gates remain responsible for low coverage.
         if home_n < cls.RECENT_N or away_n < cls.RECENT_N:
             return PremiumRiskDecision(False)
 
@@ -83,9 +113,6 @@ class PremiumRiskGuard:
                     f"{weak_side} recent venue BTTS {weak_rate:.0%} < {cls.BTTS_MIN_RECENT_SIDE:.0%}",
                 )
 
-            # A team failing to score in 2+ of its last 5 venue-specific games is
-            # too fragile for a Premium BTTS position, even if the opposite side
-            # and the market create attractive aggregate probability/EV.
             if home_fts >= cls.BTTS_MAX_RECENT_FTS:
                 return PremiumRiskDecision(
                     True,
@@ -99,9 +126,6 @@ class PremiumRiskGuard:
                     f"away recent failed-to-score {away_fts:.0%} >= {cls.BTTS_MAX_RECENT_FTS:.0%}",
                 )
 
-            # Compound nil-risk guard: combine scoring fragility with the
-            # opponent's venue clean-sheet history. This targets 0-0/1-0 type
-            # failures without blindly penalizing every strong defence.
             if home_fts >= 0.20 and away_cs >= cls.BTTS_STRONG_CLEAN_SHEET:
                 return PremiumRiskDecision(
                     True,
@@ -114,5 +138,24 @@ class PremiumRiskGuard:
                     "btts_nil_risk_away",
                     f"away FTS {away_fts:.0%} + home clean sheets {home_cs:.0%}",
                 )
+
+            # Fluminense–Ind. Rivadavia lesson: attractive BTTS value must not
+            # conceal a current attacking drought. Venue data remains primary,
+            # but a severe last-five all-venue scoring collapse is a hard veto.
+            fixture = getattr(prediction, "fixture", None)
+            if fixture is not None:
+                for side, team in (("home", fixture.home_team), ("away", fixture.away_team)):
+                    profile = cls._current_attack_profile(team, fixture)
+                    if profile is None:
+                        continue
+                    if (
+                        profile["avg_goals_for"] < cls.BTTS_CURRENT_ATTACK_MIN_AVG_GF
+                        or profile["failed_to_score_rate"] >= cls.BTTS_CURRENT_ATTACK_MAX_FTS
+                    ):
+                        return PremiumRiskDecision(
+                            True,
+                            f"{side}_current_attack_drought",
+                            f"{side} last5 all-venue avgGF={profile['avg_goals_for']:.2f}, FTS={profile['failed_to_score_rate']:.0%}",
+                        )
 
         return PremiumRiskDecision(False)
