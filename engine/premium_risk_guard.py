@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from django.db.models import Q
+
 from .competition_quality import classify_competition
 from .models import Fixture, Prediction, Team
 
@@ -41,13 +43,15 @@ class PremiumRiskGuard:
     @classmethod
     def _current_attack_profile(cls, team: Team, before_fixture: Fixture) -> dict | None:
         fixtures = (
-            Fixture.objects.filter(kickoff__lt=before_fixture.kickoff)
-            .filter(home_goals__isnull=False, away_goals__isnull=False)
-            .filter(home_team=team) | Fixture.objects.filter(kickoff__lt=before_fixture.kickoff)
-            .filter(home_goals__isnull=False, away_goals__isnull=False)
-            .filter(away_team=team)
+            Fixture.objects.filter(
+                kickoff__lt=before_fixture.kickoff,
+                home_goals__isnull=False,
+                away_goals__isnull=False,
+            )
+            .filter(Q(home_team=team) | Q(away_team=team))
+            .select_related("home_team", "away_team", "competition_ref")
+            .order_by("-kickoff")
         )
-        fixtures = fixtures.select_related("home_team", "away_team", "competition_ref").order_by("-kickoff")
         goals_for = []
         for fixture in fixtures.iterator(chunk_size=50):
             if classify_competition(fixture).excluded:
@@ -73,8 +77,6 @@ class PremiumRiskGuard:
         except (TypeError, ValueError):
             home_n = away_n = 0
 
-        # Do not invent a venue veto without the requested five-match sample.
-        # Existing Deep/reliability gates remain responsible for low coverage.
         if home_n < cls.RECENT_N or away_n < cls.RECENT_N:
             return PremiumRiskDecision(False)
 
@@ -139,9 +141,6 @@ class PremiumRiskGuard:
                     f"away FTS {away_fts:.0%} + home clean sheets {home_cs:.0%}",
                 )
 
-            # Fluminense–Ind. Rivadavia lesson: attractive BTTS value must not
-            # conceal a current attacking drought. Venue data remains primary,
-            # but a severe last-five all-venue scoring collapse is a hard veto.
             fixture = getattr(prediction, "fixture", None)
             if fixture is not None:
                 for side, team in (("home", fixture.home_team), ("away", fixture.away_team)):
