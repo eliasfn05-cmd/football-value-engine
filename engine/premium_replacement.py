@@ -19,10 +19,12 @@ NON_OPERATIONAL_FIXTURE_STATUSES = {
     "awd", "awarded", "wo", "walkover",
 }
 
-# Sprint 7.12.4: a calibration layer may refine a sound model signal, but it may
-# never manufacture a Premium pick from a model that strongly disagrees.
 PREMIUM_MAX_MODEL_CALIBRATION_GAP = 0.20
 PREMIUM_MIN_RAW_EV = -0.10
+# A published pick may remain stable through ordinary refresh noise, but it can
+# never remain Premium after its current V8 score falls below the selector's
+# absolute minimum dynamic floor.
+PREMIUM_ABSOLUTE_MIN_SCORE = min(DYNAMIC_SCORE_FLOORS)
 
 
 def normalized_fixture_status(value: str | None) -> str:
@@ -38,11 +40,9 @@ def fixture_is_operational(fixture) -> bool:
 class PremiumReplacementService:
     """Maintain up to three currently actionable Premium picks.
 
-    Sprint 7.12.4 keeps the publication lock but gives critical consistency
-    failures veto authority. The veto is checked against BOTH the frozen
-    publication snapshot and the current prediction calibration so legacy
-    publications cannot survive just because their old snapshot is incomplete.
-    Ordinary odds/score refreshes still cannot remove a sound official Premium.
+    Publication stability is preserved for normal market movement, but critical
+    model/calibration contradictions and a current score below the absolute
+    Premium floor have veto authority.
     """
 
     def __init__(self, *, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
@@ -84,6 +84,9 @@ class PremiumReplacementService:
             return True, f"model_calibration_gap:{gap:.3f}"
         if calibration.raw_ev < PREMIUM_MIN_RAW_EV:
             return True, f"raw_ev:{calibration.raw_ev:.3f}"
+        current_score = float(prediction.score or 0.0)
+        if current_score < PREMIUM_ABSOLUTE_MIN_SCORE:
+            return True, f"score_below_absolute_premium_floor:{current_score:.1f}<{PREMIUM_ABSOLUTE_MIN_SCORE:.1f}"
         return False, ""
 
     @staticmethod
@@ -105,10 +108,7 @@ class PremiumReplacementService:
             pass
         return False, ""
 
-    def _publication_or_current_critical_risk(
-        self,
-        publication: PremiumPublicationLedger,
-    ) -> tuple[bool, str]:
+    def _publication_or_current_critical_risk(self, publication: PremiumPublicationLedger) -> tuple[bool, str]:
         snapshot_blocked, snapshot_reason = self._publication_critical_risk(publication)
         current_blocked, current_reason = self._critical_consistency_risk(publication.prediction)
         if snapshot_blocked:
@@ -147,7 +147,6 @@ class PremiumReplacementService:
         return ranked, selected_floor
 
     def _locked_publications(self, target_date: date) -> list[PremiumPublicationLedger]:
-        """Return stable publications, except deterministic critical safety vetoes."""
         publications = (
             PremiumPublicationLedger.objects.select_related(
                 "prediction", "prediction__fixture", "prediction__fixture__home_team",
@@ -222,9 +221,7 @@ class PremiumReplacementService:
                 if len(chosen_new) >= slots_left:
                     break
 
-        DailyPremiumSelection.objects.filter(
-            target_date=target_date, model_version=self.model_version,
-        ).delete()
+        DailyPremiumSelection.objects.filter(target_date=target_date, model_version=self.model_version).delete()
 
         rows: list[DailyPremiumSelection] = []
         for publication in locked_publications:
@@ -256,6 +253,7 @@ class PremiumReplacementService:
                 "detail": critical_reason,
                 "max_model_calibration_gap": PREMIUM_MAX_MODEL_CALIBRATION_GAP,
                 "min_raw_ev": PREMIUM_MIN_RAW_EV,
+                "absolute_min_score": PREMIUM_ABSOLUTE_MIN_SCORE,
             }
             rationale["sprint_7_11_risk_guard"] = {
                 "blocked": risk.blocked, "code": risk.code, "detail": risk.detail,
