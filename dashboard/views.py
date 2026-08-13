@@ -70,9 +70,19 @@ def _parse_target_date(raw_value, *, default_today: bool = True):
 
 
 def _selected_date_picks(target_date, *, limit: int = 3):
-    service = DashboardService()
-    rows = []
-    candidates = (
+    """Return the official active Premium rows exactly as reconciled.
+
+    Sprint 7.12.2 stability rule: once PremiumReplacementService has published
+    and locked a pick, the dashboard must not independently re-score/re-filter
+    it on every page load. Re-running Deep, odds, EV or risk checks here was the
+    reason an official pick could disappear minutes later without its fixture
+    being suspended or cancelled.
+
+    Admission quality is enforced before publication; after publication the
+    DailyPremiumSelection + PremiumPublicationLedger pair is the source of
+    truth until replacement reconciliation vacates the slot.
+    """
+    return list(
         DailyPremiumSelection.objects.select_related(
             "prediction",
             "prediction__fixture",
@@ -81,30 +91,8 @@ def _selected_date_picks(target_date, *, limit: int = 3):
             "prediction__fixture__competition_ref",
         )
         .filter(target_date=target_date, model_version=V8_MODEL_VERSION)
-        .order_by("rank")
+        .order_by("rank")[:limit]
     )
-    for row in candidates.iterator(chunk_size=20):
-        prediction = row.prediction
-        if classify_competition(prediction.fixture).excluded:
-            continue
-        if not is_premium_value_odds(prediction.market_odds):
-            continue
-        if prediction.expected_value is None or prediction.expected_value < PREMIUM_MIN_EV:
-            continue
-        deep = service._deep_state(prediction)
-        if deep.get("status") != "complete" or deep.get("passed") is not True:
-            continue
-        if not DailyPremiumSelector._market_eligible_deep_preference(prediction):
-            continue
-        # Sprint 7.11 must also be respected by the operational dashboard.
-        # This prevents stale DailyPremiumSelection rows from being shown after
-        # a new loss-prevention guard has vetoed the prediction.
-        if PremiumRiskGuard.evaluate(prediction).blocked:
-            continue
-        rows.append(row)
-        if len(rows) >= limit:
-            break
-    return rows
 
 
 def _selected_date_operational(target_date, picks):
@@ -310,5 +298,11 @@ def premium_generation_status(request):
     if job is None: return JsonResponse({"ok": True, "job": None, "premium_count": 0, "stages": []})
     stages = []
     if job.pipeline_id: stages = [{"name": stage.name, "status": stage.status, "message": stage.message, "duration_seconds": stage.duration_seconds, "records_processed": stage.records_processed} for stage in job.pipeline.stages.all()]
-    premium_count = DailyPremiumSelection.objects.filter(target_date=job.target_date, model_version=V8_MODEL_VERSION, prediction__market_odds__gte=PREMIUM_VALUE_MIN_ODDS, prediction__market_odds__lte=PREMIUM_VALUE_MAX_ODDS, prediction__expected_value__gte=PREMIUM_MIN_EV).count()
+    # Count the reconciled official rows directly. Re-applying odds/EV filters
+    # here made the progress widget disagree with the locked dashboard after a
+    # later market refresh.
+    premium_count = DailyPremiumSelection.objects.filter(
+        target_date=job.target_date,
+        model_version=V8_MODEL_VERSION,
+    ).count()
     return JsonResponse({"ok": True, "job": {"id": job.id, "status": job.status, "target_date": job.target_date.isoformat(), "current_stage": job.current_stage, "progress_pct": job.progress_pct, "message": job.message, "pipeline_id": job.pipeline_id, "finished": job.finished_at is not None, "mode": job.mode}, "premium_count": premium_count, "stages": stages})
