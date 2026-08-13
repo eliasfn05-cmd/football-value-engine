@@ -19,7 +19,7 @@ NON_OPERATIONAL_FIXTURE_STATUSES = {
     "awd", "awarded", "wo", "walkover",
 }
 
-# Sprint 7.12.3: a calibration layer may refine a sound model signal, but it may
+# Sprint 7.12.4: a calibration layer may refine a sound model signal, but it may
 # never manufacture a Premium pick from a model that strongly disagrees.
 PREMIUM_MAX_MODEL_CALIBRATION_GAP = 0.20
 PREMIUM_MIN_RAW_EV = -0.10
@@ -38,12 +38,11 @@ def fixture_is_operational(fixture) -> bool:
 class PremiumReplacementService:
     """Maintain up to three currently actionable Premium picks.
 
-    Sprint 7.12.3 keeps the publication lock, but introduces one deliberately
-    narrow exception: a publication-time critical model/calibration contradiction
-    is a data/model safety veto, not a normal re-ranking event. Such a pick is
-    excluded deterministically from its frozen ledger snapshot and its slot may
-    be filled by the best fully eligible candidate. Ordinary odds/score refreshes
-    still cannot make an official Premium disappear.
+    Sprint 7.12.4 keeps the publication lock but gives critical consistency
+    failures veto authority. The veto is checked against BOTH the frozen
+    publication snapshot and the current prediction calibration so legacy
+    publications cannot survive just because their old snapshot is incomplete.
+    Ordinary odds/score refreshes still cannot remove a sound official Premium.
     """
 
     def __init__(self, *, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
@@ -106,6 +105,18 @@ class PremiumReplacementService:
             pass
         return False, ""
 
+    def _publication_or_current_critical_risk(
+        self,
+        publication: PremiumPublicationLedger,
+    ) -> tuple[bool, str]:
+        snapshot_blocked, snapshot_reason = self._publication_critical_risk(publication)
+        current_blocked, current_reason = self._critical_consistency_risk(publication.prediction)
+        if snapshot_blocked:
+            return True, snapshot_reason
+        if current_blocked:
+            return True, f"current_{current_reason}"
+        return False, ""
+
     def _rank_operational_candidates(self, target_date: date):
         start, end = self.selector._bounds(target_date)
         future_start = max(start, timezone.now())
@@ -151,7 +162,7 @@ class PremiumReplacementService:
             fixture = publication.prediction.fixture
             if fixture.id in seen_fixtures or not fixture_is_operational(fixture):
                 continue
-            critical, _ = self._publication_critical_risk(publication)
+            critical, _ = self._publication_or_current_critical_risk(publication)
             if critical:
                 continue
             locked.append(publication)
@@ -188,7 +199,7 @@ class PremiumReplacementService:
         removed_labels = []
         for row in all_publications:
             unavailable = not fixture_is_operational(row.prediction.fixture)
-            critical, critical_reason = self._publication_critical_risk(row)
+            critical, critical_reason = self._publication_or_current_critical_risk(row)
             if unavailable or critical:
                 removed_publications.append(row)
                 label = f"{row.prediction.fixture.home_team.name} vs {row.prediction.fixture.away_team.name}"
@@ -240,7 +251,7 @@ class PremiumReplacementService:
             rationale["selector_dynamic_floor_used"] = selected_floor
             risk = PremiumRiskGuard.evaluate(prediction)
             critical, critical_reason = self._critical_consistency_risk(prediction)
-            rationale["sprint_7_12_3_consistency_guard"] = {
+            rationale["sprint_7_12_4_consistency_guard"] = {
                 "blocked": critical,
                 "detail": critical_reason,
                 "max_model_calibration_gap": PREMIUM_MAX_MODEL_CALIBRATION_GAP,
