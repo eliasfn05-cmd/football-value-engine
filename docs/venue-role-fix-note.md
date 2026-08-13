@@ -1,0 +1,1 @@
+Club America is the away team against Austin for the 2026-08-13 Leagues Cup fixture. Premium validation must use Austin home-form and Club America away-form.
