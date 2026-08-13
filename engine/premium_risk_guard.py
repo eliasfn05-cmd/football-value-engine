@@ -18,14 +18,24 @@ class PremiumRiskDecision:
 class PremiumRiskGuard:
     """Hard loss-prevention guards learned from Premium backtesting.
 
-    Sprint 7.10 deliberately gives the last five venue-specific matches more
-    authority than broad form, model probability or apparent EV. A second,
-    narrower current-attack check catches BTTS profiles where recent scoring
-    health has deteriorated across all venues.
+    Sprint 7.11 makes Premium admission deliberately asymmetric: broad form,
+    model probability and EV may rank a candidate, but the last five
+    home-at-home / away-at-away matches have veto authority. Over 2.5 now
+    requires a genuine two-sided venue signal plus at least one strong anchor
+    side, and adds explicit 0-0/1-0 risk controls. BTTS keeps the Sprint 7.10
+    venue and current-attack drought guards.
     """
 
     RECENT_N = 5
-    OVER25_MIN_RECENT_SIDE = 0.50
+
+    # Over 2.5: at least 3/5 on BOTH venue sides and at least 4/5 on one side.
+    OVER25_MIN_RECENT_SIDE = 0.60
+    OVER25_STRONG_ANCHOR_SIDE = 0.80
+    OVER25_MIN_RECENT_COMBINED = 0.70
+    OVER25_MIN_MARKET_SUPPORT = 0.65
+    OVER25_MAX_RECENT_FTS_FOR_NIL_RISK = 0.40
+    OVER25_STRONG_CLEAN_SHEET = 0.40
+
     BTTS_MIN_RECENT_SIDE = 0.50
     BTTS_MAX_RECENT_FTS = 0.40
     BTTS_STRONG_CLEAN_SHEET = 0.50
@@ -77,23 +87,76 @@ class PremiumRiskGuard:
         except (TypeError, ValueError):
             home_n = away_n = 0
 
+        # Premium cannot claim venue certainty without the requested sample.
+        # Leave low coverage to the existing Deep/reliability gates rather than
+        # inventing rates from smaller samples.
         if home_n < cls.RECENT_N or away_n < cls.RECENT_N:
             return PremiumRiskDecision(False)
 
         if prediction.market == "OVER_2_5":
             home_recent = cls._float(evidence, "home_recent_over25_rate")
             away_recent = cls._float(evidence, "away_recent_over25_rate")
+            home_fts = cls._float(evidence, "home_recent_failed_to_score_rate", 0.0)
+            away_fts = cls._float(evidence, "away_recent_failed_to_score_rate", 0.0)
+            home_cs = cls._float(evidence, "home_clean_sheet_rate", 0.0)
+            away_cs = cls._float(evidence, "away_clean_sheet_rate", 0.0)
+            market_support = cls._float(evidence, "market_support_index", 0.0)
             if home_recent is None or away_recent is None:
                 return PremiumRiskDecision(False)
 
             weak_side = "home" if home_recent <= away_recent else "away"
             weak_rate = min(home_recent, away_recent)
+            strong_rate = max(home_recent, away_recent)
+            combined_recent = (home_recent + away_recent) / 2.0
+
+            # Avaí–CRB lesson: 2/5 (40%) at the relevant venue can never be
+            # rescued by the opponent, raw probability, score or apparent EV.
             if weak_rate < cls.OVER25_MIN_RECENT_SIDE:
                 return PremiumRiskDecision(
                     True,
                     "venue_recent_over25_hard_floor",
                     f"{weak_side} recent venue Over2.5 {weak_rate:.0%} < {cls.OVER25_MIN_RECENT_SIDE:.0%}",
                 )
+
+            # Bremer–Phönix / Tampa–Louisville lesson: 3/5 + 3/5 is still too
+            # fragile for Premium. Require one side to be a genuine 4/5 anchor
+            # and the combined last-five signal to be at least 70%.
+            if strong_rate < cls.OVER25_STRONG_ANCHOR_SIDE:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_no_strong_venue_anchor",
+                    f"best venue Over2.5 side {strong_rate:.0%} < {cls.OVER25_STRONG_ANCHOR_SIDE:.0%}",
+                )
+            if combined_recent < cls.OVER25_MIN_RECENT_COMBINED:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_recent_combined_floor",
+                    f"combined recent venue Over2.5 {combined_recent:.0%} < {cls.OVER25_MIN_RECENT_COMBINED:.0%}",
+                )
+            if market_support < cls.OVER25_MIN_MARKET_SUPPORT:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_market_support_hard_floor",
+                    f"Deep market support {market_support:.3f} < {cls.OVER25_MIN_MARKET_SUPPORT:.2f}",
+                )
+
+            # Explicit nil-risk guard. Over can survive one team blanking only
+            # when the opponent is not simultaneously showing a strong clean-
+            # sheet profile. This targets 0-0/1-0/2-0 tails that aggregate goal
+            # averages and EV systematically underweight.
+            if home_fts >= cls.OVER25_MAX_RECENT_FTS_FOR_NIL_RISK and away_cs >= cls.OVER25_STRONG_CLEAN_SHEET:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_nil_risk_home",
+                    f"home recent FTS {home_fts:.0%} + away clean sheets {away_cs:.0%}",
+                )
+            if away_fts >= cls.OVER25_MAX_RECENT_FTS_FOR_NIL_RISK and home_cs >= cls.OVER25_STRONG_CLEAN_SHEET:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_nil_risk_away",
+                    f"away recent FTS {away_fts:.0%} + home clean sheets {home_cs:.0%}",
+                )
+
             return PremiumRiskDecision(False)
 
         if prediction.market == "BTTS":
