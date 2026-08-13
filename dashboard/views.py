@@ -13,6 +13,7 @@ from engine.candidate_pool import CandidatePoolRule, high_recall_candidate_pool
 from engine.competition_quality import classify_competition
 from engine.model_diagnostics import ModelDiagnosticsService
 from engine.models import DailyPremiumSelection, Prediction
+from engine.premium_risk_guard import PremiumRiskGuard
 from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
 from engine.value_policy import PREMIUM_MIN_EV, PREMIUM_VALUE_MAX_ODDS, PREMIUM_VALUE_MIN_ODDS, is_premium_value_odds
@@ -95,6 +96,11 @@ def _selected_date_picks(target_date, *, limit: int = 3):
             continue
         if not DailyPremiumSelector._market_eligible_deep_preference(prediction):
             continue
+        # Sprint 7.11 must also be respected by the operational dashboard.
+        # This prevents stale DailyPremiumSelection rows from being shown after
+        # a new loss-prevention guard has vetoed the prediction.
+        if PremiumRiskGuard.evaluate(prediction).blocked:
+            continue
         rows.append(row)
         if len(rows) >= limit:
             break
@@ -152,10 +158,34 @@ def _validated_pending_odds(*, limit: int = 20):
     return rows
 
 
+def _risk_guard_reason(prediction: Prediction) -> str | None:
+    risk = PremiumRiskGuard.evaluate(prediction)
+    if not risk.blocked:
+        return None
+    labels = {
+        "venue_recent_over25_hard_floor": "Over 2.5 bloqueado: uno de los equipos no alcanza 3/5 en su condición local/visita",
+        "over25_no_strong_venue_anchor": "Over 2.5 bloqueado: falta un ancla venue fuerte de 4/5",
+        "over25_recent_combined_floor": "Over 2.5 bloqueado: señal combinada local/visita inferior al 70%",
+        "over25_market_support_hard_floor": "Over 2.5 bloqueado: soporte Deep del mercado insuficiente",
+        "over25_nil_risk_home": "Over 2.5 bloqueado: riesgo alto de local sin marcar / rival con porterías a cero",
+        "over25_nil_risk_away": "Over 2.5 bloqueado: riesgo alto de visitante sin marcar / local con porterías a cero",
+        "venue_recent_btts_hard_floor": "BTTS bloqueado: uno de los equipos no alcanza el piso venue reciente",
+        "home_recent_scoring_fragility": "BTTS bloqueado: fragilidad anotadora reciente del local",
+        "away_recent_scoring_fragility": "BTTS bloqueado: fragilidad anotadora reciente del visitante",
+        "btts_nil_risk_home": "BTTS bloqueado: riesgo de local en cero",
+        "btts_nil_risk_away": "BTTS bloqueado: riesgo de visitante en cero",
+        "home_current_attack_drought": "BTTS bloqueado: sequía ofensiva reciente del local",
+        "away_current_attack_drought": "BTTS bloqueado: sequía ofensiva reciente del visitante",
+    }
+    label = labels.get(risk.code, f"Bloqueado por Sprint 7.11 ({risk.code})")
+    return f"{label}: {risk.detail}" if risk.detail else label
+
+
 def _human_current_rejection_reason(prediction: Prediction) -> str:
     reasons = DailyPremiumSelector.rejection_reasons(prediction, score_floor=76.0)
-    if not reasons:
-        return "Cumple filtros Premium; quedó fuera solo por ranking del Top 3"
+    risk_reason = _risk_guard_reason(prediction)
+    if not reasons and not risk_reason:
+        return "Cumple todos los filtros Premium"
     labels = []
     for reason in reasons:
         if reason.startswith("competition:"):
@@ -176,6 +206,8 @@ def _human_current_rejection_reason(prediction: Prediction) -> str:
         elif reason == "fragile_over25_two_goal_ceiling": labels.append("Over frágil: riesgo de techo de 2 goles")
         elif reason.startswith("score:"): labels.append(f"Score final {float(reason.split(':', 1)[1]):.1f} < piso dinámico 76")
         else: labels.append(reason)
+    if risk_reason:
+        labels.append(risk_reason)
     return "; ".join(labels)
 
 
@@ -198,19 +230,44 @@ def dashboard_home(request):
 def developer_dashboard(request):
     service = DashboardService(); context = service.build_developer()
     context["pending_odds"] = _validated_pending_odds(limit=20); context["model_diagnostics"] = ModelDiagnosticsService().build(); context["deep_premium"] = service.premium_picks(limit=3)
-    selected_prediction_ids = set(DailyPremiumSelection.objects.filter(model_version=V8_MODEL_VERSION, prediction__fixture__kickoff__gte=timezone.now()).values_list("prediction_id", flat=True))
+
+    # Sprint 7.12.1 — developer audit must use the exact same active date and
+    # the exact same final risk guard as the operational Premium selector.
+    target_date = timezone.localdate()
+    start = timezone.make_aware(datetime.combine(target_date, dt_time.min))
+    end = start + timedelta(days=1)
+    selected_prediction_ids = set(
+        DailyPremiumSelection.objects.filter(
+            target_date=target_date,
+            model_version=V8_MODEL_VERSION,
+        ).values_list("prediction_id", flat=True)
+    )
+    selected_count = len(selected_prediction_ids)
+
     alternates, rejected = [], []
     for source_row in context.get("near_premium", []):
         prediction = source_row["prediction"]
+        if not (start <= prediction.fixture.kickoff < end):
+            continue
         if prediction.id in selected_prediction_ids:
             continue
-        row = dict(source_row); reasons = DailyPremiumSelector.rejection_reasons(prediction, score_floor=76.0)
-        if not reasons:
-            row["reason"] = "Cumple todos los filtros Premium; suplente por ranking del Top 3"
-            alternates.append(row)
+        row = dict(source_row)
+        reasons = DailyPremiumSelector.rejection_reasons(prediction, score_floor=76.0)
+        risk = PremiumRiskGuard.evaluate(prediction)
+
+        if not reasons and not risk.blocked:
+            if selected_count >= 3:
+                row["reason"] = "Cumple todos los filtros Premium; suplente por ranking global después de completar el Top 3"
+                alternates.append(row)
+            else:
+                # This should be impossible after PremiumReplacementService.reconcile().
+                # Do not mislabel it as a Top-3 alternate: surface the inconsistency.
+                row["reason"] = "Elegible Premium con plaza disponible; requiere reconciliación del selector"
+                rejected.append(row)
         else:
             row["reason"] = _human_current_rejection_reason(prediction)
             rejected.append(row)
+
     alternates.sort(key=lambda row: (float(row["prediction"].score or 0), float(row["prediction"].expected_value or 0)), reverse=True)
     rejected.sort(key=lambda row: float(row["prediction"].score or 0), reverse=True)
     context["premium_alternates"] = alternates
