@@ -41,6 +41,8 @@ class PremiumRiskGuard:
     VERIFIED_AUDIT_VETOES = {
         ("2026-08-14", "reims", "dunkerque", "OVER_2_5"):
             "external/form audit contradicted the model's 67% Over 2.5 estimate; hold out of Premium",
+        ("2026-08-14", "qizilqum", "mash", "OVER_2_5"):
+            "deep standards audit: insufficient robust Over 2.5 profile for Premium despite model edge; hold out of Premium",
     }
 
     @staticmethod
