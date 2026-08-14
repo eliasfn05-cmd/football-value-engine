@@ -34,6 +34,15 @@ class PremiumRiskGuard:
         ("leagues cup", 2026, "club américa", "austin fc"): ("austin fc", "club américa"),
     }
 
+    # Verified audit vetoes are explicit, traceable exceptions created after a
+    # manual/deep audit finds a material contradiction that is not yet encoded
+    # by the generic feature set. They are market-specific and date-specific so
+    # they cannot silently blacklist a team in future fixtures.
+    VERIFIED_AUDIT_VETOES = {
+        ("2026-08-14", "reims", "dunkerque", "OVER_2_5"):
+            "external/form audit contradicted the model's 67% Over 2.5 estimate; hold out of Premium",
+    }
+
     @staticmethod
     def _float(evidence: dict, key: str, default=None):
         try:
@@ -57,6 +66,25 @@ class PremiumRiskGuard:
         return None
 
     @classmethod
+    def _verified_audit_veto(cls, prediction: Prediction):
+        fixture = getattr(prediction, "fixture", None)
+        if fixture is None:
+            return None
+        kickoff = getattr(fixture, "kickoff", None)
+        if kickoff is None:
+            return None
+        target_date = kickoff.date().isoformat()
+        home = cls._norm(fixture.home_team.name)
+        away = cls._norm(fixture.away_team.name)
+        market = str(getattr(prediction, "market", "") or "").strip().upper()
+        for (date_key, home_token, away_token, market_key), detail in cls.VERIFIED_AUDIT_VETOES.items():
+            direct = home_token in home and away_token in away
+            reverse = home_token in away and away_token in home
+            if target_date == date_key and market == market_key and (direct or reverse):
+                return PremiumRiskDecision(True, "verified_audit_veto", detail)
+        return None
+
+    @classmethod
     def _current_attack_profile(cls, team: Team, before_fixture: Fixture) -> dict | None:
         fixtures = (Fixture.objects.filter(kickoff__lt=before_fixture.kickoff, home_goals__isnull=False, away_goals__isnull=False)
                     .filter(Q(home_team=team) | Q(away_team=team))
@@ -76,6 +104,9 @@ class PremiumRiskGuard:
     def evaluate(cls, prediction: Prediction) -> PremiumRiskDecision:
         fixture = getattr(prediction, "fixture", None)
         if fixture is not None:
+            veto = cls._verified_audit_veto(prediction)
+            if veto:
+                return veto
             mismatch = cls._role_mismatch(fixture)
             if mismatch:
                 return mismatch
