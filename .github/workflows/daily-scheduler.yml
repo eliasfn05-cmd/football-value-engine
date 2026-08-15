@@ -141,7 +141,7 @@ jobs:
               echo "Usable score seed detected: selective Premium refresh only."
             else
               BOOTSTRAP="1"
-              echo "No usable score seed: bootstrap will run BEFORE Premium refresh."
+              echo "No usable score seed: fast future-only V8 bootstrap required."
             fi
           fi
 
@@ -167,17 +167,18 @@ jobs:
             export PREMIUM_INTERACTIVE_FAST=1
             echo "Interactive Premium optimization enabled."
 
+            # Claim the dashboard job immediately. The previous flow only marked
+            # it RUNNING after the bootstrap, so the dashboard declared a false
+            # 'worker no reclamó' timeout while GitHub Actions was actually busy.
+            python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; j=PremiumGenerationJob.objects.filter(pk=$JOB_ID).first(); j and PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='BOOTSTRAP_V8',progress_pct=5,message='Worker activo; preparando bootstrap V8 de partidos futuros.',started_at=timezone.now(),finished_at=None)"
+
             if [ "${{ steps.execution.outputs.bootstrap }}" = "1" ]; then
-              echo "Building lightweight V8 seed before candidate selection..."
-              # Critical: run bootstrap as a separate morning pass. Previously the
-              # full pipeline saw 1-2 stale predictions after ingest and incorrectly
-              # skipped SCORE_V8, leaving the candidate pool empty.
-              python manage.py daily_pipeline \
-                --mode morning \
+              echo "Building fast future-only V8 seed before candidate selection..."
+              python manage.py scan_daily \
                 --date "$TARGET_DATE" \
-                --attempts 1 \
-                --retry-delay 0
-              echo "Bootstrap complete; continuing with selective Premium refresh."
+                --v8-bootstrap \
+                --limit 400
+              echo "Fast V8 bootstrap complete; continuing with selective Premium refresh."
               PIPELINE_MODE="refresh"
             fi
           fi
