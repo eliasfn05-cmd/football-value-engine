@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict
 from statistics import mean
@@ -13,7 +14,20 @@ from .models import Fixture, LineupSnapshot, OddsSnapshot, StandingSnapshot
 
 
 class BatchFeatureEngineeringService:
-    """Bounded SQL preload for scoring a complete date against remote PostgreSQL."""
+    """Bounded SQL preload for scoring a complete date against remote PostgreSQL.
+
+    Interactive Premium generation has two distinct phases:
+    1) a high-recall bootstrap over the large daily card; and
+    2) a full rescore of the small candidate pool.
+
+    Standings and lineup window queries are useful in phase 2 but can dominate
+    wall-clock time when the bootstrap contains hundreds/thousands of fixtures.
+    When PREMIUM_INTERACTIVE_FAST is enabled and the card is large, bootstrap
+    therefore loads only venue history + current odds. The shortlisted pool is
+    rescored later with the complete feature set because it is below the cutoff.
+    """
+
+    INTERACTIVE_HEAVY_FEATURE_CUTOFF = 120
 
     def __init__(
         self,
@@ -35,6 +49,13 @@ class BatchFeatureEngineeringService:
         self._previous_lineup_by_team: dict[int, LineupSnapshot] = {}
         self._odds: dict[tuple[int, str, str], float] = {}
 
+    @staticmethod
+    def _interactive_fast_enabled() -> bool:
+        return os.getenv("PREMIUM_INTERACTIVE_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _use_lightweight_bootstrap(self) -> bool:
+        return self._interactive_fast_enabled() and len(self.fixtures) > self.INTERACTIVE_HEAVY_FEATURE_CUTOFF
+
     def _phase(self, name: str, fn) -> None:
         started = time.perf_counter()
         self.progress(f"[features] START {name}")
@@ -45,12 +66,20 @@ class BatchFeatureEngineeringService:
     def preload(self) -> None:
         if not self.fixtures:
             return
+        lightweight = self._use_lightweight_bootstrap()
         self.progress(
-            f"[features] preload teams={len(self.team_ids)} fixtures={len(self.fixture_ids)} sample={self.venue_sample_size}"
+            f"[features] preload teams={len(self.team_ids)} fixtures={len(self.fixture_ids)} "
+            f"sample={self.venue_sample_size} lightweight_bootstrap={str(lightweight).lower()}"
         )
         self._phase("history", self._preload_history)
-        self._phase("standings", self._preload_standings)
-        self._phase("lineups", self._preload_lineups)
+        if lightweight:
+            self.progress(
+                "[features] SKIP standings/lineups for large interactive bootstrap; "
+                "candidate rescore will restore full features"
+            )
+        else:
+            self._phase("standings", self._preload_standings)
+            self._phase("lineups", self._preload_lineups)
         self._phase("odds", self._preload_odds)
 
     def _preload_history(self) -> None:
