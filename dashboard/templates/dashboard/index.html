@@ -17,24 +17,16 @@
       </div>
       <div class="hero-actions">
         <form id="premium-generator-form" class="premium-generator-form">{% csrf_token %}
-          <label class="date-picker-wrap" for="premium-target-date">
-            <span>Fecha de partidos</span>
-            <input id="premium-target-date" class="date-picker" type="date" value="{{ selected_date_iso }}" min="{{ today_iso }}">
-          </label>
+          <label class="date-picker-wrap" for="premium-target-date"><span>Fecha de partidos</span><input id="premium-target-date" class="date-picker" type="date" value="{{ selected_date_iso }}" min="{{ today_iso }}"></label>
           <button id="generate-premium" class="generate-button" type="button" {% if not pipeline_trigger_configured %}disabled{% endif %}>Generar Picks Premium</button>
+          <button id="cancel-premium" class="generate-button" type="button" style="display:none;background:#7f1d1d;border-color:#ef4444;color:#fff">Cancelar</button>
         </form>
         <div class="status-pill"><span></span> Producción</div>
       </div>
     </header>
 
     <section id="generation-panel" class="generation-panel {% if not pipeline_trigger_configured %}generation-warning{% endif %}">
-      <div class="generation-head">
-        <div>
-          <p class="eyebrow">GENERACIÓN</p>
-          <strong id="generation-status">{% if pipeline_trigger_configured %}Listo para generar el Top Premium del {{ selected_date|date:"d/m/Y" }}.{% else %}Configuración pendiente: agrega GITHUB_ACTIONS_TOKEN y PIPELINE_TRIGGER_PIN en Render.{% endif %}</strong>
-        </div>
-        <span id="generation-percent" class="generation-percent">0%</span>
-      </div>
+      <div class="generation-head"><div><p class="eyebrow">GENERACIÓN</p><strong id="generation-status">{% if pipeline_trigger_configured %}Listo para generar el Top Premium del {{ selected_date|date:"d/m/Y" }}.{% else %}Configuración pendiente: agrega GITHUB_ACTIONS_TOKEN y PIPELINE_TRIGGER_PIN en Render.{% endif %}</strong></div><span id="generation-percent" class="generation-percent">0%</span></div>
       <div class="generation-progress"><div id="generation-progress-bar" class="generation-progress-bar" style="width:0%"></div></div>
       <div id="generation-stage" class="generation-stage">{% if active_generation_job_id %}Retomando generación activa…{% else %}Sin trabajo activo.{% endif %}</div>
       <div id="generation-stages" class="generation-stages"></div>
@@ -49,10 +41,7 @@
 
     {% if premium_picks %}
     <section class="panel premium-panel">
-      <div class="panel-head">
-        <div><p class="eyebrow">SELECCIÓN OFICIAL</p><h2>Top Premium · {{ selected_date|date:"d/m/Y" }}</h2></div>
-        <button id="copy-picks" class="action-button" type="button">Copiar Picks</button>
-      </div>
+      <div class="panel-head"><div><p class="eyebrow">SELECCIÓN OFICIAL</p><h2>Top Premium · {{ selected_date|date:"d/m/Y" }}</h2></div><button id="copy-picks" class="action-button" type="button">Copiar Picks</button></div>
       <div class="premium-grid" id="premium-picks">
         {% for row in premium_picks %}{% with pick=row.prediction %}
         <article class="premium-card" data-copy="{{ row.rank }}. {{ pick.fixture.home_team.name }} vs {{ pick.fixture.away_team.name }} | Premium {{ row.premium_tier }} | {{ pick.market }} {{ pick.selection }} | Cuota {% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %} | Prob. modelo {{ pick.probability|floatformat:3 }} | Prob. calibrada {{ row.rationale.calibrated_probability|floatformat:3 }} | Edge cal. {{ row.rationale.calibrated_edge|floatformat:3 }} | EV fiable {{ row.rationale.reliable_expected_value|floatformat:3 }} | Rank {{ row.premium_rank_score|floatformat:1 }}">
@@ -60,16 +49,7 @@
           <h3>{{ pick.fixture.home_team.name }} <span>vs</span> {{ pick.fixture.away_team.name }}</h3>
           <div class="pick-market">{{ pick.market }} · {{ pick.selection }}</div>
           <div class="pick-stats">
-            <div><small>Prob. modelo</small><strong>{{ pick.probability|floatformat:3 }}</strong></div>
-            <div><small>Prob. calibrada</small><strong>{% if row.rationale.calibrated_probability != None %}{{ row.rationale.calibrated_probability|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>Cuota</small><strong>{% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %}</strong></div>
-            <div><small>Prob. mercado</small><strong>{% if row.rationale.market_implied_probability != None %}{{ row.rationale.market_implied_probability|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>Edge bruto</small><strong>{% if pick.edge != None %}{{ pick.edge|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>Edge calibrado</small><strong>{% if row.rationale.calibrated_edge != None %}{{ row.rationale.calibrated_edge|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>EV bruto</small><strong>{% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>EV fiable</small><strong>{% if row.rationale.reliable_expected_value != None %}{{ row.rationale.reliable_expected_value|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>Reliability</small><strong>{% if row.rationale.probability_reliability != None %}{{ row.rationale.probability_reliability|floatformat:3 }}{% else %}—{% endif %}</strong></div>
-            <div><small>Score final</small><strong>{{ pick.score|floatformat:1 }}</strong></div>
+            <div><small>Prob. modelo</small><strong>{{ pick.probability|floatformat:3 }}</strong></div><div><small>Prob. calibrada</small><strong>{% if row.rationale.calibrated_probability != None %}{{ row.rationale.calibrated_probability|floatformat:3 }}{% else %}—{% endif %}</strong></div><div><small>Cuota</small><strong>{% if pick.market_odds %}{{ pick.market_odds|floatformat:2 }}{% else %}—{% endif %}</strong></div><div><small>Prob. mercado</small><strong>{% if row.rationale.market_implied_probability != None %}{{ row.rationale.market_implied_probability|floatformat:3 }}{% else %}—{% endif %}</strong></div><div><small>Edge bruto</small><strong>{% if pick.edge != None %}{{ pick.edge|floatformat:3 }}{% else %}—{% endif %}</strong></div><div><small>Edge calibrado</small><strong>{% if row.rationale.calibrated_edge != None %}{{ row.rationale.calibrated_edge|floatformat:3 }}{% else %}—{% endif %}</strong></div><div><small>EV bruto</small><strong>{% if pick.expected_value != None %}{{ pick.expected_value|floatformat:3 }}{% else %}—{% endif %}</strong></div><div><small>EV fiable</small><strong>{% if row.rationale.reliable_expected_value != None %}{{ row.rationale.reliable_expected_value|floatformat:3 }}{% else %}—{% endif %}</strong></div><div><small>Reliability</small><strong>{% if row.rationale.probability_reliability != None %}{{ row.rationale.probability_reliability|floatformat:3 }}{% else %}—{% endif %}</strong></div><div><small>Score final</small><strong>{{ pick.score|floatformat:1 }}</strong></div>
           </div>
           <div class="kickoff">Inicio: {{ pick.fixture.kickoff|date:"d/m/Y H:i" }}</div>
         </article>
@@ -77,10 +57,7 @@
       </div>
     </section>
     {% else %}
-    <section class="no-bet-card">
-      <div class="no-bet-icon">—</div>
-      <div><p class="eyebrow">DECISIÓN DEL MODELO · {{ selected_date|date:"d/m/Y" }}</p><h2>NO BET</h2><p>Ninguna predicción superó todas las validaciones de Sprint 7.5.1 para la fecha seleccionada. El sistema no publicará picks por obligación.</p></div>
-    </section>
+    <section class="no-bet-card"><div class="no-bet-icon">—</div><div><p class="eyebrow">DECISIÓN DEL MODELO · {{ selected_date|date:"d/m/Y" }}</p><h2>NO BET</h2><p>Ninguna predicción superó todas las validaciones de Sprint 7.5.1 para la fecha seleccionada. El sistema no publicará picks por obligación.</p></div></section>
     {% endif %}
 
     <section class="metrics-grid history-metrics">
@@ -90,123 +67,29 @@
       <article class="metric-card"><span>Profit</span><strong>{{ metrics.profit_units|floatformat:2 }} u</strong><small>Solo selecciones operativas</small></article>
     </section>
 
-    <section class="panel">
-      <div class="panel-head"><div><p class="eyebrow">HISTÓRICO</p><h2>Últimos resultados Premium</h2></div></div>
-      <div class="table-wrap"><table><thead><tr><th>Partido</th><th>Pick</th><th>Marcador</th><th>Cuota</th><th>Resultado</th><th>P/L</th></tr></thead><tbody>{% for row in recent_results %}<tr><td>{{ row.prediction.fixture.home_team.name }} vs {{ row.prediction.fixture.away_team.name }}</td><td>{{ row.prediction.market }} · {{ row.prediction.selection }}</td><td>{{ row.home_goals }}-{{ row.away_goals }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td><span class="result result-{{ row.result|lower }}">{{ row.result }}</span></td><td><strong>{{ row.profit_units|floatformat:2 }} u</strong></td></tr>{% empty %}<tr><td colspan="6" class="empty">Aún no hay picks Premium liquidados.</td></tr>{% endfor %}</tbody></table></div>
-    </section>
+    <section class="panel"><div class="panel-head"><div><p class="eyebrow">HISTÓRICO</p><h2>Últimos resultados Premium</h2></div></div><div class="table-wrap"><table><thead><tr><th>Partido</th><th>Pick</th><th>Marcador</th><th>Cuota</th><th>Resultado</th><th>P/L</th></tr></thead><tbody>{% for row in recent_results %}<tr><td>{{ row.prediction.fixture.home_team.name }} vs {{ row.prediction.fixture.away_team.name }}</td><td>{{ row.prediction.market }} · {{ row.prediction.selection }}</td><td>{{ row.home_goals }}-{{ row.away_goals }}</td><td>{% if row.prediction.market_odds %}{{ row.prediction.market_odds|floatformat:2 }}{% else %}—{% endif %}</td><td><span class="result result-{{ row.result|lower }}">{{ row.result }}</span></td><td><strong>{{ row.profit_units|floatformat:2 }} u</strong></td></tr>{% empty %}<tr><td colspan="6" class="empty">Aún no hay picks Premium liquidados.</td></tr>{% endfor %}</tbody></table></div></section>
 
     <footer>Football Value Engine · Sprint 7.5.1: máximo 3 picks, valor calibrado por mercado, Deep Analysis y competiciones oficiales únicamente.</footer>
   </main>
 
   <script>
-    const copyButton = document.getElementById('copy-picks');
-    if (copyButton) copyButton.addEventListener('click', async () => {
-      const rows = [...document.querySelectorAll('.premium-card')].map(card => card.dataset.copy);
-      try { await navigator.clipboard.writeText(`FOOTBALL VALUE ENGINE · PICKS PREMIUM\n\n${rows.join('\n\n')}`); copyButton.textContent='Copiado ✓'; setTimeout(()=>copyButton.textContent='Copiar Picks',1800); }
-      catch (_) { copyButton.textContent='No se pudo copiar'; }
-    });
+    const copyButton=document.getElementById('copy-picks');if(copyButton)copyButton.addEventListener('click',async()=>{const rows=[...document.querySelectorAll('.premium-card')].map(card=>card.dataset.copy);try{await navigator.clipboard.writeText(`FOOTBALL VALUE ENGINE · PICKS PREMIUM\n\n${rows.join('\n\n')}`);copyButton.textContent='Copiado ✓';setTimeout(()=>copyButton.textContent='Copiar Picks',1800)}catch(_){copyButton.textContent='No se pudo copiar'}});
+    const generateButton=document.getElementById('generate-premium');
+    const cancelButton=document.getElementById('cancel-premium');
+    const targetDateInput=document.getElementById('premium-target-date');
+    const statusBox=document.getElementById('generation-status');const stageBox=document.getElementById('generation-stage');const stagesBox=document.getElementById('generation-stages');const progressBar=document.getElementById('generation-progress-bar');const progressLabel=document.getElementById('generation-percent');const csrfToken=document.querySelector('#premium-generator-form input[name="csrfmiddlewaretoken"]')?.value;const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+    let currentJobId={% if active_generation_job_id %}{{ active_generation_job_id }}{% else %}null{% endif %};
+    let pollingCancelled=false;
 
-    const generateButton = document.getElementById('generate-premium');
-    const targetDateInput = document.getElementById('premium-target-date');
-    const statusBox = document.getElementById('generation-status');
-    const stageBox = document.getElementById('generation-stage');
-    const stagesBox = document.getElementById('generation-stages');
-    const progressBar = document.getElementById('generation-progress-bar');
-    const progressLabel = document.getElementById('generation-percent');
-    const csrfToken = document.querySelector('#premium-generator-form input[name="csrfmiddlewaretoken"]')?.value;
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    function setRunningUi(running){generateButton.disabled=running;generateButton.textContent=running?'Generando…':'Generar Picks Premium';cancelButton.style.display=running?'inline-flex':'none';cancelButton.disabled=false;targetDateInput.disabled=running;}
+    if(targetDateInput)targetDateInput.addEventListener('change',()=>{if(!targetDateInput.value)return;const url=new URL(window.location.href);url.searchParams.set('date',targetDateInput.value);window.history.replaceState({},'',url);statusBox.textContent=`Listo para generar el Top Premium del ${targetDateInput.value}.`;});
+    function renderGeneration(data){const job=data.job;if(!job)return;const pct=Math.max(0,Math.min(100,Number(job.progress_pct||0)));progressBar.style.width=`${pct}%`;progressLabel.textContent=`${pct}%`;statusBox.textContent=job.message||'Generando Picks Premium…';stageBox.textContent=job.current_stage?`Etapa actual: ${job.current_stage}`:'Preparando…';stagesBox.innerHTML=(data.stages||[]).map(stage=>{const css=String(stage.status||'').toLowerCase();const duration=stage.duration_seconds?` · ${stage.duration_seconds}s`:'';return `<span class="generation-stage-chip stage-${css}">${stage.name}: ${stage.status}${duration}</span>`}).join('');}
+    async function pollGeneration(jobId){if(!jobId)return;currentJobId=jobId;pollingCancelled=false;setRunningUi(true);const started=Date.now();while(!pollingCancelled&&Date.now()-started<20*60*1000){const response=await fetch(`{% url "premium-generation-status" %}?job_id=${encodeURIComponent(jobId)}`,{cache:'no-store'});const data=await response.json();if(!response.ok||!data.ok){statusBox.textContent=data.message||'No se pudo consultar el estado.';setRunningUi(false);return;}renderGeneration(data);const job=data.job;if(job&&(job.status==='SUCCESS'||job.status==='PARTIAL')){statusBox.textContent=`Completado · ${data.premium_count} Pick(s) Premium. Actualizando página…`;setRunningUi(false);await sleep(1200);const url=new URL(window.location.href);url.searchParams.set('date',job.target_date);window.location.href=url.toString();return;}if(job&&job.status==='FAILED'){statusBox.textContent=job.message||'La generación terminó con error.';setRunningUi(false);return;}await sleep(3000);}if(!pollingCancelled){statusBox.textContent='La generación sigue tardando más de lo esperado. Puedes actualizar la página más tarde.';setRunningUi(false);}}
 
-    if (targetDateInput) targetDateInput.addEventListener('change', () => {
-      if (!targetDateInput.value) return;
-      const url = new URL(window.location.href);
-      url.searchParams.set('date', targetDateInput.value);
-      window.history.replaceState({}, '', url);
-      statusBox.textContent = `Listo para generar el Top Premium del ${targetDateInput.value}.`;
-    });
+    if(cancelButton)cancelButton.addEventListener('click',async()=>{if(!currentJobId)return;const pin=window.prompt('Ingresa el PIN operativo para cancelar y detener el proceso:');if(!pin)return;if(!window.confirm('¿Cancelar esta generación? El proceso activo de GitHub Actions será detenido.'))return;cancelButton.disabled=true;cancelButton.textContent='Cancelando…';statusBox.textContent='Enviando orden de cancelación al worker…';try{const response=await fetch('{% url "cancel-premium-generation" %}',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},body:JSON.stringify({pin,job_id:currentJobId})});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'No se pudo cancelar el proceso.');pollingCancelled=true;statusBox.textContent=data.message;stageBox.textContent='Etapa actual: CANCELLED';progressBar.style.width='100%';progressLabel.textContent='100%';currentJobId=null;setRunningUi(false);}catch(error){statusBox.textContent=error.message;cancelButton.disabled=false;cancelButton.textContent='Cancelar';}});
 
-    function renderGeneration(data) {
-      const job = data.job;
-      if (!job) return;
-      const pct = Math.max(0, Math.min(100, Number(job.progress_pct || 0)));
-      progressBar.style.width = `${pct}%`;
-      progressLabel.textContent = `${pct}%`;
-      statusBox.textContent = job.message || 'Generando Picks Premium…';
-      stageBox.textContent = job.current_stage ? `Etapa actual: ${job.current_stage}` : 'Preparando…';
-      stagesBox.innerHTML = (data.stages || []).map(stage => {
-        const css = String(stage.status || '').toLowerCase();
-        const duration = stage.duration_seconds ? ` · ${stage.duration_seconds}s` : '';
-        return `<span class="generation-stage-chip stage-${css}">${stage.name}: ${stage.status}${duration}</span>`;
-      }).join('');
-    }
-
-    async function pollGeneration(jobId) {
-      if (!jobId) return;
-      generateButton.disabled = true;
-      generateButton.textContent = 'Generando…';
-      const started = Date.now();
-      while (Date.now() - started < 20 * 60 * 1000) {
-        const response = await fetch(`{% url "premium-generation-status" %}?job_id=${encodeURIComponent(jobId)}`, {cache:'no-store'});
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-          statusBox.textContent = data.message || 'No se pudo consultar el estado.';
-          generateButton.disabled = false;
-          generateButton.textContent = 'Generar Picks Premium';
-          return;
-        }
-        renderGeneration(data);
-        const job = data.job;
-        if (job && (job.status === 'SUCCESS' || job.status === 'PARTIAL')) {
-          statusBox.textContent = `Completado · ${data.premium_count} Pick(s) Premium. Actualizando página…`;
-          await sleep(1200);
-          const url = new URL(window.location.href);
-          url.searchParams.set('date', job.target_date);
-          window.location.href = url.toString();
-          return;
-        }
-        if (job && job.status === 'FAILED') {
-          statusBox.textContent = job.message || 'La generación terminó con error.';
-          generateButton.disabled = false;
-          generateButton.textContent = 'Generar Picks Premium';
-          return;
-        }
-        await sleep(3000);
-      }
-      statusBox.textContent = 'La generación sigue tardando más de lo esperado. Puedes actualizar la página más tarde.';
-      generateButton.disabled = false;
-      generateButton.textContent = 'Generar Picks Premium';
-    }
-
-    if (generateButton) generateButton.addEventListener('click', async () => {
-      const targetDate = targetDateInput?.value;
-      if (!targetDate) {
-        statusBox.textContent = 'Selecciona primero la fecha de los partidos.';
-        targetDateInput?.focus();
-        return;
-      }
-      const pin = window.prompt(`Ingresa el PIN operativo para generar los Picks Premium del ${targetDate}:`);
-      if (!pin) return;
-      generateButton.disabled = true;
-      generateButton.textContent = 'Generando…';
-      statusBox.textContent = `Creando trabajo seguro para ${targetDate}…`;
-      stageBox.textContent = 'Etapa actual: QUEUE';
-      try {
-        const response = await fetch('{% url "generate-premium-picks" %}', {
-          method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},
-          body:JSON.stringify({pin, target_date: targetDate})
-        });
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error(data.message || 'No se pudo iniciar el pipeline.');
-        statusBox.textContent = data.message;
-        await pollGeneration(Number(data.job_id));
-      } catch (error) {
-        statusBox.textContent = error.message;
-        generateButton.disabled = false;
-        generateButton.textContent = 'Generar Picks Premium';
-      }
-    });
-
-    const activeJobId = {% if active_generation_job_id %}{{ active_generation_job_id }}{% else %}null{% endif %};
-    if (activeJobId && generateButton) pollGeneration(activeJobId);
+    if(generateButton)generateButton.addEventListener('click',async()=>{const targetDate=targetDateInput?.value;if(!targetDate){statusBox.textContent='Selecciona primero la fecha de los partidos.';targetDateInput?.focus();return;}const pin=window.prompt(`Ingresa el PIN operativo para generar los Picks Premium del ${targetDate}:`);if(!pin)return;setRunningUi(true);statusBox.textContent=`Creando trabajo seguro para ${targetDate}…`;stageBox.textContent='Etapa actual: QUEUE';try{const response=await fetch('{% url "generate-premium-picks" %}',{method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},body:JSON.stringify({pin,target_date:targetDate})});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'No se pudo iniciar el pipeline.');statusBox.textContent=data.message;currentJobId=Number(data.job_id);await pollGeneration(currentJobId);}catch(error){statusBox.textContent=error.message;setRunningUi(false);}});
+    if(currentJobId&&generateButton)pollGeneration(currentJobId);
   </script>
 </body>
 </html>
