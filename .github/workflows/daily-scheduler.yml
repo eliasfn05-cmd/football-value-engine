@@ -123,13 +123,11 @@ jobs:
         run: |
           MODE="${{ steps.schedule.outputs.mode }}"
           FAST="0"
+          BOOTSTRAP="0"
           JOB_ID="${{ steps.schedule.outputs.generation_job_id }}"
           TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
 
           if [ -n "$JOB_ID" ]; then
-            # Reuse any usable V8 seed. If a seed does not exist yet, perform one
-            # lightweight full-card bootstrap; shortlisted candidates are rescored
-            # later with the complete feature set before Premium admission.
             COUNTS=$(python manage.py shell -c "from datetime import datetime,time,timedelta; from django.utils import timezone; from engine.models import Fixture,Prediction; from engine.score_v8 import V8_MODEL_VERSION; d=datetime.fromisoformat('$TARGET_DATE').date(); s=timezone.make_aware(datetime.combine(d,time.min)); e=s+timedelta(days=1); now=timezone.now(); fs=max(s,now); f=Fixture.objects.filter(kickoff__gte=fs,kickoff__lt=e).count(); p=Prediction.objects.filter(model_version=V8_MODEL_VERSION,fixture__kickoff__gte=fs,fixture__kickoff__lt=e).values('fixture_id').distinct().count(); print(f'{p} {f}')")
             PREDICTED_FIXTURES=$(echo "$COUNTS" | awk '{print $1}')
             FUTURE_FIXTURES=$(echo "$COUNTS" | awk '{print $2}')
@@ -137,20 +135,20 @@ jobs:
             if [ "$FUTURE_FIXTURES" -lt "$REQUIRED" ]; then REQUIRED="$FUTURE_FIXTURES"; fi
 
             echo "Interactive coverage: predicted_fixtures=$PREDICTED_FIXTURES future_fixtures=$FUTURE_FIXTURES required=$REQUIRED"
+            FAST="1"
+            MODE="refresh"
             if [ "$REQUIRED" -gt 0 ] && [ "$PREDICTED_FIXTURES" -ge "$REQUIRED" ]; then
-              MODE="refresh"
-              FAST="1"
-              echo "Usable score seed detected: skipping full SCORE_V8 and using selective refresh."
+              echo "Usable score seed detected: selective Premium refresh only."
             else
-              MODE="full"
-              FAST="1"
-              echo "No usable score seed: running one LIGHTWEIGHT SCORE_V8 bootstrap (history + odds only), then full-feature candidate rescore."
+              BOOTSTRAP="1"
+              echo "No usable score seed: bootstrap will run BEFORE Premium refresh."
             fi
           fi
 
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "fast=$FAST" >> "$GITHUB_OUTPUT"
-          echo "Final execution mode=$MODE interactive_fast=$FAST"
+          echo "bootstrap=$BOOTSTRAP" >> "$GITHUB_OUTPUT"
+          echo "Final execution mode=$MODE interactive_fast=$FAST bootstrap=$BOOTSTRAP"
 
       - name: Run scheduled pipeline
         shell: bash
@@ -158,19 +156,35 @@ jobs:
           EXTRA_ARGS=()
           ATTEMPTS=3
           RETRY_DELAY=5
-          if [ -n "${{ steps.schedule.outputs.generation_job_id }}" ]; then
-            EXTRA_ARGS+=(--generation-job-id "${{ steps.schedule.outputs.generation_job_id }}")
-            # Dashboard requests must fail fast instead of repeating an expensive
-            # stage. A new click/concurrency replacement is safer than retrying a
-            # long database preload inside the same worker.
+          PIPELINE_MODE="${{ steps.execution.outputs.mode }}"
+          TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
+          JOB_ID="${{ steps.schedule.outputs.generation_job_id }}"
+
+          if [ -n "$JOB_ID" ]; then
+            EXTRA_ARGS+=(--generation-job-id "$JOB_ID")
             ATTEMPTS=1
             RETRY_DELAY=0
             export PREMIUM_INTERACTIVE_FAST=1
-            echo "Interactive Premium optimization enabled: lightweight bootstrap for large cards; full features restored only on shortlisted candidates."
+            echo "Interactive Premium optimization enabled."
+
+            if [ "${{ steps.execution.outputs.bootstrap }}" = "1" ]; then
+              echo "Building lightweight V8 seed before candidate selection..."
+              # Critical: run bootstrap as a separate morning pass. Previously the
+              # full pipeline saw 1-2 stale predictions after ingest and incorrectly
+              # skipped SCORE_V8, leaving the candidate pool empty.
+              python manage.py daily_pipeline \
+                --mode morning \
+                --date "$TARGET_DATE" \
+                --attempts 1 \
+                --retry-delay 0
+              echo "Bootstrap complete; continuing with selective Premium refresh."
+              PIPELINE_MODE="refresh"
+            fi
           fi
+
           python manage.py daily_pipeline \
-            --mode "${{ steps.execution.outputs.mode }}" \
-            --date "${{ steps.schedule.outputs.target_date }}" \
+            --mode "$PIPELINE_MODE" \
+            --date "$TARGET_DATE" \
             --attempts "$ATTEMPTS" \
             --retry-delay "$RETRY_DELAY" \
             "${EXTRA_ARGS[@]}"
