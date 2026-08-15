@@ -29,9 +29,11 @@ on:
         required: false
         type: string
 
+# Interactive dashboard work must not wait behind the long scheduled full-card run.
+# Repeated dashboard requests for the same date replace an older stuck interactive run.
 concurrency:
-  group: football-value-daily-pipeline
-  cancel-in-progress: false
+  group: football-value-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.generation_job_id != '' && format('interactive-{0}', github.event.inputs.target_date) || 'scheduled' }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.generation_job_id != '' }}
 
 jobs:
   run-pipeline:
@@ -82,7 +84,7 @@ jobs:
             echo "Secondary odds fallback: Odds-API.io enabled."
           fi
 
-      - name: Resolve Lima date and mode
+      - name: Resolve Lima date and requested mode
         id: schedule
         shell: bash
         env:
@@ -110,10 +112,46 @@ jobs:
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
           echo "generation_job_id=${GENERATION_JOB_ID:-}" >> "$GITHUB_OUTPUT"
-          echo "Resolved mode=$MODE target_date=$TARGET_DATE generation_job_id=${GENERATION_JOB_ID:-none}"
+          echo "Resolved requested mode=$MODE target_date=$TARGET_DATE generation_job_id=${GENERATION_JOB_ID:-none}"
 
       - name: Verify production schema is current
         run: python manage.py migrate --check
+
+      - name: Resolve interactive execution strategy
+        id: execution
+        shell: bash
+        run: |
+          MODE="${{ steps.schedule.outputs.mode }}"
+          FAST="0"
+          JOB_ID="${{ steps.schedule.outputs.generation_job_id }}"
+          TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
+
+          if [ -n "$JOB_ID" ]; then
+            # A stale partial score must never be mistaken for a healthy card merely
+            # because one or two Prediction rows exist. Require at least 40 distinct
+            # scored fixtures (or all fixtures when the card is smaller) before using
+            # the selective refresh path.
+            COUNTS=$(python manage.py shell -c "from datetime import datetime,time,timedelta; from django.utils import timezone; from engine.models import Fixture,Prediction; from engine.score_v8 import V8_MODEL_VERSION; d=datetime.fromisoformat('$TARGET_DATE').date(); s=timezone.make_aware(datetime.combine(d,time.min)); e=s+timedelta(days=1); now=timezone.now(); fs=max(s,now); f=Fixture.objects.filter(kickoff__gte=fs,kickoff__lt=e).count(); p=Prediction.objects.filter(model_version=V8_MODEL_VERSION,fixture__kickoff__gte=fs,fixture__kickoff__lt=e).values('fixture_id').distinct().count(); print(f'{p} {f}')")
+            PREDICTED_FIXTURES=$(echo "$COUNTS" | awk '{print $1}')
+            FUTURE_FIXTURES=$(echo "$COUNTS" | awk '{print $2}')
+            REQUIRED=40
+            if [ "$FUTURE_FIXTURES" -lt "$REQUIRED" ]; then REQUIRED="$FUTURE_FIXTURES"; fi
+
+            echo "Interactive coverage: predicted_fixtures=$PREDICTED_FIXTURES future_fixtures=$FUTURE_FIXTURES required=$REQUIRED"
+            if [ "$REQUIRED" -gt 0 ] && [ "$PREDICTED_FIXTURES" -ge "$REQUIRED" ]; then
+              MODE="refresh"
+              FAST="1"
+              echo "Healthy score coverage detected: using fast candidate refresh."
+            else
+              MODE="full"
+              FAST="0"
+              echo "Incomplete score coverage detected: forcing full INGEST + SCORE_V8 recovery before Premium selection."
+            fi
+          fi
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "fast=$FAST" >> "$GITHUB_OUTPUT"
+          echo "Final execution mode=$MODE interactive_fast=$FAST"
 
       - name: Run scheduled pipeline
         shell: bash
@@ -123,13 +161,18 @@ jobs:
           RETRY_DELAY=5
           if [ -n "${{ steps.schedule.outputs.generation_job_id }}" ]; then
             EXTRA_ARGS+=(--generation-job-id "${{ steps.schedule.outputs.generation_job_id }}")
-            export PREMIUM_INTERACTIVE_FAST=1
             ATTEMPTS=2
             RETRY_DELAY=1
-            echo "Interactive Premium fast path enabled: high-recall sweep up to 40 fixtures, multi-source odds, no standings backfill, near-kickoff lineups only."
+            if [ "${{ steps.execution.outputs.fast }}" = "1" ]; then
+              export PREMIUM_INTERACTIVE_FAST=1
+              echo "Interactive Premium fast path enabled: high-recall sweep up to 40 fixtures, multi-source odds, no standings backfill, near-kickoff lineups only."
+            else
+              unset PREMIUM_INTERACTIVE_FAST
+              echo "Interactive recovery path enabled: rebuilding complete score coverage before candidate selection."
+            fi
           fi
           python manage.py daily_pipeline \
-            --mode "${{ steps.schedule.outputs.mode }}" \
+            --mode "${{ steps.execution.outputs.mode }}" \
             --date "${{ steps.schedule.outputs.target_date }}" \
             --attempts "$ATTEMPTS" \
             --retry-delay "$RETRY_DELAY" \
