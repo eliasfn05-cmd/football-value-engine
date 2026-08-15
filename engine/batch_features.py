@@ -17,14 +17,12 @@ class BatchFeatureEngineeringService:
     """Bounded SQL preload for scoring a complete date against remote PostgreSQL.
 
     Interactive Premium generation has two distinct phases:
-    1) a high-recall bootstrap over the large daily card; and
+    1) a high-recall bootstrap over the daily card; and
     2) a full rescore of the small candidate pool.
 
-    Standings and lineup window queries are useful in phase 2 but can dominate
-    wall-clock time when the bootstrap contains hundreds/thousands of fixtures.
-    When PREMIUM_INTERACTIVE_FAST is enabled and the card is large, bootstrap
-    therefore loads only venue history + current odds. The shortlisted pool is
-    rescored later with the complete feature set because it is below the cutoff.
+    Interactive bootstrap must stay lightweight regardless of card size. Standings
+    and lineup window queries are intentionally deferred to the shortlisted rescore,
+    where the pool is small enough to run the complete feature set quickly.
     """
 
     INTERACTIVE_HEAVY_FEATURE_CUTOFF = 120
@@ -54,7 +52,11 @@ class BatchFeatureEngineeringService:
         return os.getenv("PREMIUM_INTERACTIVE_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _use_lightweight_bootstrap(self) -> bool:
-        return self._interactive_fast_enabled() and len(self.fixtures) > self.INTERACTIVE_HEAVY_FEATURE_CUTOFF
+        # The interactive workflow immediately performs a full-feature rescore on
+        # the shortlisted candidate pool. Running expensive standings/lineup
+        # window queries here duplicates that work and was the main BOOTSTRAP_V8
+        # bottleneck even on cards smaller than the old 120-fixture threshold.
+        return self._interactive_fast_enabled()
 
     def _phase(self, name: str, fn) -> None:
         started = time.perf_counter()
@@ -74,7 +76,7 @@ class BatchFeatureEngineeringService:
         self._phase("history", self._preload_history)
         if lightweight:
             self.progress(
-                "[features] SKIP standings/lineups for large interactive bootstrap; "
+                "[features] SKIP standings/lineups for interactive bootstrap; "
                 "candidate rescore will restore full features"
             )
         else:
@@ -220,76 +222,37 @@ class BatchFeatureEngineeringService:
         escalation = (btts_and_over / btts) if btts else 0.50
         return VenueProfile(
             sample_size=n,
-            goals_for=round(mean(gf_values), 3),
-            goals_against=round(mean(ga_values), 3),
-            over25_rate=round(overs / n, 3),
-            btts_rate=round(btts / n, 3),
-            clean_sheet_rate=round(clean / n, 3),
-            failed_to_score_rate=round(fts / n, 3),
-            btts_over25_escalation_rate=round(escalation, 3),
-            low_score_rate=round(low_score / n, 3),
-            one_one_rate=round(one_one / n, 3),
+            avg_goals_for=mean(gf_values),
+            avg_goals_against=mean(ga_values),
+            over25_rate=overs / n,
+            btts_rate=btts / n,
+            clean_sheet_rate=clean / n,
+            failed_to_score_rate=fts / n,
+            btts_over25_escalation=escalation,
+            low_score_rate=low_score / n,
+            one_one_rate=one_one / n,
         )
-
-    @staticmethod
-    def _player_ids(snapshot: LineupSnapshot | None) -> set[str]:
-        return FeatureEngineeringService._lineup_player_ids(snapshot)
-
-    def _continuity(self, fixture_id: int, team_id: int) -> float | None:
-        current = self._lineups_current.get((fixture_id, team_id))
-        previous = self._previous_lineup_by_team.get(team_id)
-        current_ids = self._player_ids(current)
-        previous_ids = self._player_ids(previous)
-        if not current_ids or not previous_ids:
-            return None
-        denominator = max(1, min(11, len(current_ids), len(previous_ids)))
-        return round(len(current_ids & previous_ids) / denominator, 3)
 
     def build(self, fixture: Fixture) -> FeatureVector:
-        home = self._profile(self._history.get((fixture.home_team_id, "home"), []), "home")
-        away = self._profile(self._history.get((fixture.away_team_id, "away"), []), "away")
-
-        home_position = away_position = None
-        home_ppg = away_ppg = None
-        if fixture.competition_ref_id:
-            home_row = self._standings.get((fixture.competition_ref_id, fixture.home_team_id))
-            away_row = self._standings.get((fixture.competition_ref_id, fixture.away_team_id))
-            if home_row:
-                home_position = home_row.position
-                home_ppg = round(home_row.points / home_row.played, 3) if home_row.played else None
-            if away_row:
-                away_position = away_row.position
-                away_ppg = round(away_row.points / away_row.played, 3) if away_row.played else None
-
-        home_lineup = self._continuity(fixture.id, fixture.home_team_id)
-        away_lineup = self._continuity(fixture.id, fixture.away_team_id)
-        btts_odds = self._odds.get((fixture.id, "BTTS", "YES"))
-        over_odds = self._odds.get((fixture.id, "OVER_2_5", "OVER"))
-        quality = FeatureEngineeringService._quality_score(
-            home, away, home_position, away_position, home_lineup, away_lineup, btts_odds, over_odds
+        home_history = self._history.get((fixture.home_team_id, "home"), [])
+        away_history = self._history.get((fixture.away_team_id, "away"), [])
+        home = self._profile(home_history, "home")
+        away = self._profile(away_history, "away")
+        service = FeatureEngineeringService()
+        standings = service._standing_features(
+            fixture,
+            home_row=self._standings.get((fixture.competition_ref_id, fixture.home_team_id)),
+            away_row=self._standings.get((fixture.competition_ref_id, fixture.away_team_id)),
         )
-
-        return FeatureVector(
-            fixture_id=fixture.external_id,
-            home_team=fixture.home_team.name,
-            away_team=fixture.away_team.name,
-            home_profile=home,
-            away_profile=away,
-            home_over25_last5_home=home.over25_rate,
-            away_over25_last5_away=away.over25_rate,
-            home_btts_last5_home=home.btts_rate,
-            away_btts_last5_away=away.btts_rate,
-            home_clean_sheet_rate=home.clean_sheet_rate,
-            away_clean_sheet_rate=away.clean_sheet_rate,
-            home_failed_to_score_rate=home.failed_to_score_rate,
-            away_failed_to_score_rate=away.failed_to_score_rate,
-            home_table_position=home_position,
-            away_table_position=away_position,
-            home_points_per_game=home_ppg,
-            away_points_per_game=away_ppg,
-            home_lineup_continuity=home_lineup,
-            away_lineup_continuity=away_lineup,
-            btts_market_odds=btts_odds,
-            over25_market_odds=over_odds,
-            data_quality_score=quality,
+        lineups = service._lineup_features(
+            fixture,
+            home_current=self._lineups_current.get((fixture.id, fixture.home_team_id)),
+            away_current=self._lineups_current.get((fixture.id, fixture.away_team_id)),
+            home_previous=self._previous_lineup_by_team.get(fixture.home_team_id),
+            away_previous=self._previous_lineup_by_team.get(fixture.away_team_id),
         )
+        odds = {
+            "btts_yes": self._odds.get((fixture.id, "BTTS", "YES")),
+            "over_2_5": self._odds.get((fixture.id, "OVER_2_5", "OVER")),
+        }
+        return FeatureVector(home=home, away=away, standings=standings, lineups=lineups, odds=odds)
