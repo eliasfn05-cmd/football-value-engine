@@ -127,10 +127,9 @@ jobs:
           TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
 
           if [ -n "$JOB_ID" ]; then
-            # Interactive runs must be responsive. If we already have a usable
-            # seed of V8 predictions, reuse it and refresh only the high-recall
-            # candidate pool. The scheduled morning run remains responsible for
-            # full-card discovery/scoring.
+            # Reuse any usable V8 seed. If a seed does not exist yet, perform one
+            # lightweight full-card bootstrap; shortlisted candidates are rescored
+            # later with the complete feature set before Premium admission.
             COUNTS=$(python manage.py shell -c "from datetime import datetime,time,timedelta; from django.utils import timezone; from engine.models import Fixture,Prediction; from engine.score_v8 import V8_MODEL_VERSION; d=datetime.fromisoformat('$TARGET_DATE').date(); s=timezone.make_aware(datetime.combine(d,time.min)); e=s+timedelta(days=1); now=timezone.now(); fs=max(s,now); f=Fixture.objects.filter(kickoff__gte=fs,kickoff__lt=e).count(); p=Prediction.objects.filter(model_version=V8_MODEL_VERSION,fixture__kickoff__gte=fs,fixture__kickoff__lt=e).values('fixture_id').distinct().count(); print(f'{p} {f}')")
             PREDICTED_FIXTURES=$(echo "$COUNTS" | awk '{print $1}')
             FUTURE_FIXTURES=$(echo "$COUNTS" | awk '{print $2}')
@@ -144,8 +143,8 @@ jobs:
               echo "Usable score seed detected: skipping full SCORE_V8 and using selective refresh."
             else
               MODE="full"
-              FAST="0"
-              echo "Insufficient score seed: one full recovery pass is required."
+              FAST="1"
+              echo "No usable score seed: running one LIGHTWEIGHT SCORE_V8 bootstrap (history + odds only), then full-feature candidate rescore."
             fi
           fi
 
@@ -161,15 +160,13 @@ jobs:
           RETRY_DELAY=5
           if [ -n "${{ steps.schedule.outputs.generation_job_id }}" ]; then
             EXTRA_ARGS+=(--generation-job-id "${{ steps.schedule.outputs.generation_job_id }}")
-            ATTEMPTS=2
-            RETRY_DELAY=1
-            if [ "${{ steps.execution.outputs.fast }}" = "1" ]; then
-              export PREMIUM_INTERACTIVE_FAST=1
-              echo "Interactive Premium fast path enabled: high-recall sweep up to 40 fixtures, multi-source odds, no standings backfill, near-kickoff lineups only."
-            else
-              unset PREMIUM_INTERACTIVE_FAST
-              echo "Interactive recovery path enabled: rebuilding score seed before candidate selection."
-            fi
+            # Dashboard requests must fail fast instead of repeating an expensive
+            # stage. A new click/concurrency replacement is safer than retrying a
+            # long database preload inside the same worker.
+            ATTEMPTS=1
+            RETRY_DELAY=0
+            export PREMIUM_INTERACTIVE_FAST=1
+            echo "Interactive Premium optimization enabled: lightweight bootstrap for large cards; full features restored only on shortlisted candidates."
           fi
           python manage.py daily_pipeline \
             --mode "${{ steps.execution.outputs.mode }}" \
