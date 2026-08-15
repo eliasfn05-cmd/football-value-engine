@@ -127,25 +127,25 @@ jobs:
           TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
 
           if [ -n "$JOB_ID" ]; then
-            # A stale partial score must never be mistaken for a healthy card merely
-            # because one or two Prediction rows exist. Require at least 40 distinct
-            # scored fixtures (or all fixtures when the card is smaller) before using
-            # the selective refresh path.
+            # Interactive runs must be responsive. If we already have a usable
+            # seed of V8 predictions, reuse it and refresh only the high-recall
+            # candidate pool. The scheduled morning run remains responsible for
+            # full-card discovery/scoring.
             COUNTS=$(python manage.py shell -c "from datetime import datetime,time,timedelta; from django.utils import timezone; from engine.models import Fixture,Prediction; from engine.score_v8 import V8_MODEL_VERSION; d=datetime.fromisoformat('$TARGET_DATE').date(); s=timezone.make_aware(datetime.combine(d,time.min)); e=s+timedelta(days=1); now=timezone.now(); fs=max(s,now); f=Fixture.objects.filter(kickoff__gte=fs,kickoff__lt=e).count(); p=Prediction.objects.filter(model_version=V8_MODEL_VERSION,fixture__kickoff__gte=fs,fixture__kickoff__lt=e).values('fixture_id').distinct().count(); print(f'{p} {f}')")
             PREDICTED_FIXTURES=$(echo "$COUNTS" | awk '{print $1}')
             FUTURE_FIXTURES=$(echo "$COUNTS" | awk '{print $2}')
-            REQUIRED=40
+            REQUIRED=8
             if [ "$FUTURE_FIXTURES" -lt "$REQUIRED" ]; then REQUIRED="$FUTURE_FIXTURES"; fi
 
             echo "Interactive coverage: predicted_fixtures=$PREDICTED_FIXTURES future_fixtures=$FUTURE_FIXTURES required=$REQUIRED"
             if [ "$REQUIRED" -gt 0 ] && [ "$PREDICTED_FIXTURES" -ge "$REQUIRED" ]; then
               MODE="refresh"
               FAST="1"
-              echo "Healthy score coverage detected: using fast candidate refresh."
+              echo "Usable score seed detected: skipping full SCORE_V8 and using selective refresh."
             else
               MODE="full"
               FAST="0"
-              echo "Incomplete score coverage detected: forcing full INGEST + SCORE_V8 recovery before Premium selection."
+              echo "Insufficient score seed: one full recovery pass is required."
             fi
           fi
 
@@ -168,7 +168,7 @@ jobs:
               echo "Interactive Premium fast path enabled: high-recall sweep up to 40 fixtures, multi-source odds, no standings backfill, near-kickoff lineups only."
             else
               unset PREMIUM_INTERACTIVE_FAST
-              echo "Interactive recovery path enabled: rebuilding complete score coverage before candidate selection."
+              echo "Interactive recovery path enabled: rebuilding score seed before candidate selection."
             fi
           fi
           python manage.py daily_pipeline \
