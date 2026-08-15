@@ -58,7 +58,7 @@ LOWER_LEAGUE_TERMS = (
     "league two", "liga 3", "liga iii", "third league", "3 liga", "3rd liga",
     "segunda federacion", "tercera federacion", "national league north", "national league south",
     "primera b metropolitana", "primera c", "primera d",
-    "usl league one", "usl1",
+    "usl league one", "usl1", "usl cup",
 )
 
 # Explicit allowlist for professional lower tiers with comparatively strong
