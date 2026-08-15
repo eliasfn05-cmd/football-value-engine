@@ -58,6 +58,9 @@ LOWER_LEAGUE_TERMS = (
     "league two", "liga 3", "liga iii", "third league", "3 liga", "3rd liga",
     "segunda federacion", "tercera federacion", "national league north", "national league south",
     "primera b metropolitana", "primera c", "primera d",
+    # USL League One is the U.S. third tier. Keep it out of Premium Value:
+    # lower liquidity/data robustness makes model-vs-market edges less reliable.
+    "usl league one", "usl1",
 )
 
 
