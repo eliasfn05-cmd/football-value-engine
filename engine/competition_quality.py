@@ -58,10 +58,47 @@ LOWER_LEAGUE_TERMS = (
     "league two", "liga 3", "liga iii", "third league", "3 liga", "3rd liga",
     "segunda federacion", "tercera federacion", "national league north", "national league south",
     "primera b metropolitana", "primera c", "primera d",
-    # USL League One is the U.S. third tier. Keep it out of Premium Value:
-    # lower liquidity/data robustness makes model-vs-market edges less reliable.
     "usl league one", "usl1",
 )
+
+# Explicit allowlist for professional lower tiers with comparatively strong
+# market/data coverage. Country matching prevents generic names such as
+# "Serie B" or "Segunda Division" from whitelisting unrelated competitions.
+TRUSTED_LOWER_TIER_BY_COUNTRY = {
+    "england": (
+        "championship", "efl championship", "league one", "efl league one",
+    ),
+    "germany": (
+        "2 bundesliga", "2nd bundesliga", "zweite bundesliga",
+    ),
+    "spain": (
+        "segunda division", "laliga 2", "la liga 2", "laliga hypermotion", "la liga hypermotion",
+    ),
+    "italy": (
+        "serie b", "serie bkt",
+    ),
+    "france": (
+        "ligue 2",
+    ),
+    "portugal": (
+        "liga portugal 2", "liga portugal 2 meu super", "segunda liga",
+    ),
+    "brazil": (
+        "brasileirao serie b", "campeonato brasileiro serie b", "serie b betano",
+    ),
+    "netherlands": (
+        "eerste divisie",
+    ),
+    "belgium": (
+        "challenger pro league", "first division b",
+    ),
+    "scotland": (
+        "scottish championship", "championship",
+    ),
+    "sweden": (
+        "superettan",
+    ),
+}
 
 
 def _normalize(value: str | None) -> str:
@@ -74,6 +111,13 @@ def _normalize(value: str | None) -> str:
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     normalized_terms = tuple(_normalize(term) for term in terms)
     return any(term and term in text for term in normalized_terms)
+
+
+def _is_trusted_lower_tier(country: str | None, competition_text: str) -> bool:
+    normalized_country = _normalize(country)
+    normalized_competition = _normalize(competition_text)
+    terms = TRUSTED_LOWER_TIER_BY_COUNTRY.get(normalized_country, ())
+    return _contains_any(normalized_competition, terms)
 
 
 def _looks_like_reserve_team(name: str | None) -> bool:
@@ -92,14 +136,6 @@ def _looks_like_reserve_team(name: str | None) -> bool:
 
 
 def _looks_like_women_team(name: str | None) -> bool:
-    """Detect provider team labels for women's sides even when league metadata is generic.
-
-    Several feeds abbreviate women's teams as a trailing `W` (for example
-    `Toluca W` / `Juárez W`). Competition-only filtering missed those rows and
-    allowed them into the Premium universe. A trailing W is treated as an
-    identity marker; internal/leading W tokens are not blocked to avoid false
-    positives such as normal club names beginning with W.
-    """
     normalized = _normalize(name)
     if not normalized:
         return False
@@ -120,19 +156,37 @@ def classify_competition(fixture: Fixture) -> CompetitionQuality:
     home_name = getattr(getattr(fixture, "home_team", None), "name", "") or ""
     away_name = getattr(getattr(fixture, "away_team", None), "name", "") or ""
 
-    # Team identity is a hard exclusion and is evaluated before any official
-    # league-name override. Provider metadata can call a competition simply
-    # "Liga MX" while the teams themselves are `Toluca W` / `Juárez W`.
+    # Team identity remains a hard veto. A whitelist can never rescue women's,
+    # reserve, academy or second-team fixtures.
     if _looks_like_women_team(home_name) or _looks_like_women_team(away_name):
         return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "women_team_identity")
 
     if _looks_like_reserve_team(home_name) or _looks_like_reserve_team(away_name):
         return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "reserve_or_second_team")
 
+    competition_identity = _normalize(f"{fixture_name} {ref_name}")
     identity_text = _normalize(f"{fixture_name} {ref_name} {home_name} {away_name}")
     full_text = _normalize(
         f"{fixture_name} {ref_name} {competition_type} {country} {round_name} {external_id} {home_name} {away_name}"
     )
+
+    # Hard-risk categories always win over the whitelist.
+    if _contains_any(full_text, FRIENDLY_TERMS) or _normalize(competition_type) in {"friendly", "friendlies", "exhibition"}:
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "friendly_or_exhibition")
+
+    if _contains_any(full_text, WOMEN_TERMS):
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "women_competition")
+
+    # Trusted professional lower tiers are evaluated before generic lower-tier
+    # name filters, but only after identity/friendly/women hard vetoes.
+    if _is_trusted_lower_tier(country, competition_identity):
+        return CompetitionQuality(2, "TIER_2_TRUSTED_LOWER", 82.0, False, "trusted_professional_lower_tier")
+
+    if _contains_any(full_text, DEVELOPMENT_TERMS):
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "youth_reserve_amateur_or_development")
+
+    if _contains_any(full_text, LOWER_LEAGUE_TERMS):
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "lower_league_liquidity_filter")
 
     identity_has_exclusion = (
         _contains_any(identity_text, FRIENDLY_TERMS)
@@ -146,18 +200,6 @@ def classify_competition(fixture: Fixture) -> CompetitionQuality:
         if _contains_any(identity_text, TIER1_TERMS):
             return CompetitionQuality(1, "TIER_1_ELITE", 100.0, False, "elite_official_competition")
         return CompetitionQuality(2, "TIER_2_OFFICIAL", 90.0, False, "verified_senior_official_competition")
-
-    if _contains_any(full_text, FRIENDLY_TERMS) or _normalize(competition_type) in {"friendly", "friendlies", "exhibition"}:
-        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "friendly_or_exhibition")
-
-    if _contains_any(full_text, WOMEN_TERMS):
-        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "women_competition")
-
-    if _contains_any(full_text, DEVELOPMENT_TERMS):
-        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "youth_reserve_amateur_or_development")
-
-    if _contains_any(full_text, LOWER_LEAGUE_TERMS):
-        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "lower_league_liquidity_filter")
 
     if _contains_any(full_text, TIER1_TERMS):
         return CompetitionQuality(1, "TIER_1_ELITE", 100.0, False, "elite_official_competition")
