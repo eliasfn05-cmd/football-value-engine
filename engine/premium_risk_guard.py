@@ -43,8 +43,6 @@ class PremiumRiskGuard:
             "external/form audit contradicted the model's 67% Over 2.5 estimate; hold out of Premium",
         ("2026-08-14", "qizilqum", "mash", "OVER_2_5"):
             "deep standards audit: insufficient robust Over 2.5 profile for Premium despite model edge; hold out of Premium",
-        ("2026-08-15", "greenville triumph", "one knoxville", "OVER_2_5"):
-            "verified audit: defensive resistance and recent matchup profile contradict the model Over 2.5 estimate; hold out of Premium",
     }
 
     @staticmethod
