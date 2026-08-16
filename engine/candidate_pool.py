@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
-
-from django.utils import timezone
+from datetime import date
 
 from .competition_quality import classify_competition
 from .models import Prediction
 from .score_v8 import V8_MODEL_VERSION
+from .time_window import window_bounds
 from .value_policy import is_premium_value_odds
 
 # Sprint 7.8.1 — Broad Professional Recall, guaranteed fill.
@@ -48,8 +47,7 @@ class CandidatePoolEntry:
 
 
 def _bounds(target_date: date):
-    start = timezone.make_aware(datetime.combine(target_date, time.min))
-    return start, start + timedelta(days=1)
+    return window_bounds(target_date)
 
 
 def _market_discovery_floor(market: str) -> float:
@@ -204,6 +202,7 @@ def high_recall_candidate_pool(
     """
     rule = rule or CandidatePoolRule()
     start, end = _bounds(target_date)
+    from django.utils import timezone
     future_start = max(start, timezone.now())
 
     # Important: do NOT pre-filter by probability/score here. Doing so was the
