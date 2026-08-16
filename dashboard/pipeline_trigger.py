@@ -22,6 +22,7 @@ class GitHubPipelineTrigger:
     REPO_API = "https://api.github.com/repos/eliasfn05-cmd/football-value-engine"
     API_URL = f"{REPO_API}/actions/workflows/daily-scheduler.yml/dispatches"
     RUNS_URL = f"{REPO_API}/actions/workflows/daily-scheduler.yml/runs"
+    ACTIVE_RUN_STATUSES = {"queued", "in_progress", "waiting", "pending", "requested"}
 
     def __init__(self):
         self.token = os.getenv("GITHUB_ACTIONS_TOKEN", "").strip()
@@ -82,14 +83,31 @@ class GitHubPipelineTrigger:
         except TimeoutError:
             return TriggerResult(False, "GitHub Actions no respondió a tiempo.")
 
+    def _run_is_active(self, run_id: int) -> bool:
+        request = urllib.request.Request(
+            f"{self.REPO_API}/actions/runs/{int(run_id)}",
+            headers=self._headers(),
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return payload.get("status") in self.ACTIVE_RUN_STATUSES
+
     def _active_run_id_for_job(self, job) -> int | None:
         metadata = dict(job.metadata or {})
         stored = metadata.get("github_run_id")
         if stored:
             try:
-                return int(stored)
+                stored_run_id = int(stored)
+                if self._run_is_active(stored_run_id):
+                    return stored_run_id
+                # A stored run that has already completed/cancelled must not keep
+                # the dashboard job locked forever. Fall through and look for any
+                # newer active dispatch before declaring the local state orphaned.
             except (TypeError, ValueError):
                 pass
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {404, 410}:
+                    raise
 
         params = urllib.parse.urlencode({"event": "workflow_dispatch", "per_page": 30})
         request = urllib.request.Request(f"{self.RUNS_URL}?{params}", headers=self._headers())
@@ -99,7 +117,7 @@ class GitHubPipelineTrigger:
         lower_bound = (job.dispatched_at or job.requested_at) - timedelta(minutes=5)
         candidates = []
         for run in payload.get("workflow_runs", []):
-            if run.get("status") not in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            if run.get("status") not in self.ACTIVE_RUN_STATUSES:
                 continue
             created_raw = run.get("created_at")
             if not created_raw:
@@ -124,7 +142,14 @@ class GitHubPipelineTrigger:
         try:
             run_id = self._active_run_id_for_job(job)
             if run_id is None:
-                return TriggerResult(False, "No se encontró una ejecución activa de GitHub Actions para este trabajo.")
+                # The GitHub worker is already gone. Treat this as a successful
+                # cancellation so the endpoint can close the orphaned DB job and
+                # immediately re-enable the Generate button.
+                return TriggerResult(
+                    True,
+                    "No existe una ejecución activa en GitHub Actions; se liberó el estado huérfano del dashboard.",
+                    run_id=None,
+                )
             request = urllib.request.Request(
                 f"{self.REPO_API}/actions/runs/{run_id}/cancel",
                 data=b"{}",
@@ -137,6 +162,13 @@ class GitHubPipelineTrigger:
                 return TriggerResult(True, "Cancelación enviada a GitHub Actions.", run_id=run_id)
             return TriggerResult(False, f"GitHub respondió con estado inesperado {status} al cancelar.", run_id=run_id)
         except urllib.error.HTTPError as exc:
+            # GitHub returns 409 when the run is no longer cancellable because it
+            # already finished. That is also safe to treat as an orphan release.
+            if exc.code == 409:
+                return TriggerResult(
+                    True,
+                    "La ejecución de GitHub Actions ya había terminado; se liberó el estado local del dashboard.",
+                )
             detail = ""
             try:
                 detail = exc.read().decode("utf-8", errors="replace")[:300]
