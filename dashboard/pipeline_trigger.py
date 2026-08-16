@@ -41,11 +41,24 @@ class GitHubPipelineTrigger:
             headers["Content-Type"] = "application/json"
         return headers
 
-    def dispatch(self, *, target_date: date, mode: str = "full", generation_job_id: int | None = None) -> TriggerResult:
+    def dispatch(
+        self,
+        *,
+        target_date: date,
+        mode: str = "full",
+        generation_job_id: int | None = None,
+        start_time: str = "00:00",
+        end_time: str = "23:59",
+    ) -> TriggerResult:
         if not self.token:
             return TriggerResult(False, "GITHUB_ACTIONS_TOKEN no está configurado en Render.")
 
-        inputs = {"mode": mode, "target_date": target_date.isoformat()}
+        inputs = {
+            "mode": mode,
+            "target_date": target_date.isoformat(),
+            "start_time": start_time,
+            "end_time": end_time,
+        }
         if generation_job_id is not None:
             inputs["generation_job_id"] = str(int(generation_job_id))
 
@@ -78,10 +91,6 @@ class GitHubPipelineTrigger:
             except (TypeError, ValueError):
                 pass
 
-        # workflow_dispatch does not return a run id. Resolve it from the active
-        # workflow runs. Interactive concurrency guarantees at most one active
-        # run per target date; requested/dispatched time prevents touching an
-        # unrelated older manual run.
         params = urllib.parse.urlencode({"event": "workflow_dispatch", "per_page": 30})
         request = urllib.request.Request(f"{self.RUNS_URL}?{params}", headers=self._headers())
         with urllib.request.urlopen(request, timeout=15) as response:
