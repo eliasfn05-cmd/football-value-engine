@@ -2,11 +2,8 @@ name: daily-scheduler
 
 on:
   schedule:
-    # 06:00 America/Lima (UTC-5): discover card + first score
     - cron: "0 11 * * *"
-    # 11:00 America/Lima (UTC-5): refresh odds/lineups for shortlist + rescore
     - cron: "0 16 * * *"
-    # 23:30 America/Lima (04:30 UTC on the following UTC day): settle + learn
     - cron: "30 4 * * *"
   workflow_dispatch:
     inputs:
@@ -15,11 +12,7 @@ on:
         required: true
         default: "full"
         type: choice
-        options:
-          - full
-          - morning
-          - refresh
-          - settlement
+        options: [full, morning, refresh, settlement]
       target_date:
         description: "Optional date YYYY-MM-DD; blank = current date in America/Lima"
         required: false
@@ -39,8 +32,6 @@ on:
         required: false
         type: string
 
-# Interactive dashboard work must not wait behind the long scheduled full-card run.
-# Repeated dashboard requests for the same date replace an older stuck interactive run.
 concurrency:
   group: football-value-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.generation_job_id != '' && format('interactive-{0}', github.event.inputs.target_date) || 'scheduled' }}
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.generation_job_id != '' }}
@@ -64,40 +55,20 @@ jobs:
       MODEL_VERSION: "8.0"
       MIN_EDGE: "0.06"
       MIN_EV: "0.08"
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Install dependencies
         run: pip install -q -r requirements.txt
-
       - name: Validate scheduler secrets
-        shell: bash
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "Missing GitHub secret: RENDER_DATABASE_URL"
-            exit 1
-          fi
-          if [ -z "$API_FOOTBALL_KEY" ]; then
-            echo "Missing GitHub secret: API_FOOTBALL_KEY"
-            exit 1
-          fi
-          if [ -z "$ODDS_API_IO_KEY" ]; then
-            echo "WARNING: GitHub secret ODDS_API_IO_KEY is missing; secondary odds fallback will be disabled."
-          else
-            echo "Secondary odds fallback: Odds-API.io enabled."
-          fi
-
-      - name: Resolve Lima date and requested mode
+          test -n "$DATABASE_URL" || (echo "Missing RENDER_DATABASE_URL" && exit 1)
+          test -n "$API_FOOTBALL_KEY" || (echo "Missing API_FOOTBALL_KEY" && exit 1)
+      - name: Resolve request
         id: schedule
-        shell: bash
         env:
           MANUAL_MODE: ${{ github.event.inputs.mode }}
           MANUAL_DATE: ${{ github.event.inputs.target_date }}
@@ -106,104 +77,30 @@ jobs:
           GENERATION_JOB_ID: ${{ github.event.inputs.generation_job_id }}
           SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            MODE="${MANUAL_MODE:-full}"
-          elif [ "$SCHEDULE_EXPRESSION" = "0 11 * * *" ]; then
-            MODE="morning"
-          elif [ "$SCHEDULE_EXPRESSION" = "0 16 * * *" ]; then
-            MODE="refresh"
-          else
-            MODE="settlement"
-          fi
-
-          if [ -n "$MANUAL_DATE" ]; then
-            TARGET_DATE="$MANUAL_DATE"
-          else
-            TARGET_DATE="$(TZ=America/Lima date +%F)"
-          fi
-
-          START_TIME="${MANUAL_START_TIME:-00:00}"
-          END_TIME="${MANUAL_END_TIME:-23:59}"
-
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then MODE="${MANUAL_MODE:-full}"; elif [ "$SCHEDULE_EXPRESSION" = "0 11 * * *" ]; then MODE=morning; elif [ "$SCHEDULE_EXPRESSION" = "0 16 * * *" ]; then MODE=refresh; else MODE=settlement; fi
+          TARGET_DATE="${MANUAL_DATE:-$(TZ=America/Lima date +%F)}"
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
-          echo "start_time=$START_TIME" >> "$GITHUB_OUTPUT"
-          echo "end_time=$END_TIME" >> "$GITHUB_OUTPUT"
+          echo "start_time=${MANUAL_START_TIME:-00:00}" >> "$GITHUB_OUTPUT"
+          echo "end_time=${MANUAL_END_TIME:-23:59}" >> "$GITHUB_OUTPUT"
           echo "generation_job_id=${GENERATION_JOB_ID:-}" >> "$GITHUB_OUTPUT"
-          echo "Resolved requested mode=$MODE target_date=$TARGET_DATE window=$START_TIME-$END_TIME generation_job_id=${GENERATION_JOB_ID:-none}"
-
-      - name: Verify production schema is current
+      - name: Verify schema
         run: python manage.py migrate --check
-
-      - name: Resolve interactive execution strategy
-        id: execution
-        shell: bash
+      - name: Run pipeline
         run: |
-          MODE="${{ steps.schedule.outputs.mode }}"
-          FAST="0"
-          BOOTSTRAP="0"
-          JOB_ID="${{ steps.schedule.outputs.generation_job_id }}"
-
-          if [ -n "$JOB_ID" ]; then
-            # Dashboard requests are now explicitly block-scoped. We always do a
-            # cheap fixture ingest, bootstrap only that kickoff range, then run the
-            # unchanged selective refresh/Deep/Premium pipeline on that same range.
-            FAST="1"
-            BOOTSTRAP="1"
-            MODE="refresh"
+          MODE="${{ steps.schedule.outputs.mode }}"; DATE="${{ steps.schedule.outputs.target_date }}"; START="${{ steps.schedule.outputs.start_time }}"; END="${{ steps.schedule.outputs.end_time }}"; JOB="${{ steps.schedule.outputs.generation_job_id }}"
+          if [ -n "$JOB" ]; then
+            export PREMIUM_INTERACTIVE_FAST=1 PREMIUM_WINDOW_START="$START" PREMIUM_WINDOW_END="$END"
+            python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='INGEST',progress_pct=3,message='Carga rápida de fixtures.',started_at=timezone.now(),finished_at=None)"
+            python manage.py ingest_daily --date "$DATE" --fixtures-only
+            python manage.py shell -c "from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB).update(current_stage='BOOTSTRAP_V8',progress_pct=8,message='Bootstrap rápido del bloque $START-$END.')"
+            # Aggressive interactive mode: 120 chronological fixtures are enough for broad recall;
+            # expensive complete evidence is restored on the candidate shortlist before Premium admission.
+            python manage.py scan_daily --date "$DATE" --v8-bootstrap --limit 120
+            python manage.py daily_pipeline --mode refresh --date "$DATE" --attempts 1 --retry-delay 0 --generation-job-id "$JOB"
+          else
+            python manage.py daily_pipeline --mode "$MODE" --date "$DATE" --attempts 3 --retry-delay 5
           fi
-
-          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
-          echo "fast=$FAST" >> "$GITHUB_OUTPUT"
-          echo "bootstrap=$BOOTSTRAP" >> "$GITHUB_OUTPUT"
-          echo "Final execution mode=$MODE interactive_fast=$FAST bootstrap=$BOOTSTRAP"
-
-      - name: Run scheduled pipeline
-        shell: bash
-        run: |
-          EXTRA_ARGS=()
-          ATTEMPTS=3
-          RETRY_DELAY=5
-          PIPELINE_MODE="${{ steps.execution.outputs.mode }}"
-          TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
-          START_TIME="${{ steps.schedule.outputs.start_time }}"
-          END_TIME="${{ steps.schedule.outputs.end_time }}"
-          JOB_ID="${{ steps.schedule.outputs.generation_job_id }}"
-
-          if [ -n "$JOB_ID" ]; then
-            EXTRA_ARGS+=(--generation-job-id "$JOB_ID")
-            ATTEMPTS=1
-            RETRY_DELAY=0
-            export PREMIUM_INTERACTIVE_FAST=1
-            export PREMIUM_WINDOW_START="$START_TIME"
-            export PREMIUM_WINDOW_END="$END_TIME"
-            echo "Interactive Premium block optimization enabled: $TARGET_DATE $START_TIME-$END_TIME."
-
-            python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; j=PremiumGenerationJob.objects.filter(pk=$JOB_ID).first(); j and PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='INGEST',progress_pct=3,message='Worker activo; cargando fixtures antes del bootstrap del bloque.',started_at=timezone.now(),finished_at=None)"
-
-            # Fixture discovery is cheap and remains date-wide so the selected
-            # block is guaranteed to exist locally. Expensive work starts only
-            # after this point and is restricted by PREMIUM_WINDOW_START/END.
-            python manage.py ingest_daily --date "$TARGET_DATE" --fixtures-only
-
-            python manage.py shell -c "from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(current_stage='BOOTSTRAP_V8',progress_pct=8,message='Evaluando únicamente partidos del bloque $START_TIME-$END_TIME.')"
-
-            python manage.py scan_daily \
-              --date "$TARGET_DATE" \
-              --v8-bootstrap \
-              --limit 400
-
-            echo "Block V8 bootstrap complete; continuing selective Premium refresh."
-            PIPELINE_MODE="refresh"
-          fi
-
-          python manage.py daily_pipeline \
-            --mode "$PIPELINE_MODE" \
-            --date "$TARGET_DATE" \
-            --attempts "$ATTEMPTS" \
-            --retry-delay "$RETRY_DELAY" \
-            "${EXTRA_ARGS[@]}"
-
       - name: Backtest Over 2.5 fragility cohort
         if: ${{ success() }}
         run: python manage.py over25_fragility_backtest --model-version "$MODEL_VERSION"
