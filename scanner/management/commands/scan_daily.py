@@ -4,6 +4,7 @@ import json
 import os
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
+from time import perf_counter
 from zoneinfo import ZoneInfo
 
 from django.core.management.base import BaseCommand, CommandError
@@ -14,12 +15,15 @@ from engine.competition_quality import classify_competition
 from engine.models import Fixture, Prediction
 from engine.score_v8 import ScoreEngineV8, V8_MODEL_VERSION
 from engine.time_window import window_bounds, window_label
+from scanner.models import PremiumGenerationJob
 from scanner.providers.api_football import APIFootballProvider
 from scanner.service import DailyScanner
 
 
 PERSIST_BATCH_SIZE = 500
 DEFAULT_BOOTSTRAP_BATCH_SIZE = 100
+BOOTSTRAP_PROGRESS_START = 8
+BOOTSTRAP_PROGRESS_END = 18
 
 
 class Command(BaseCommand):
@@ -125,6 +129,35 @@ class Command(BaseCommand):
         for offset in range(0, len(items), batch_size):
             yield offset // batch_size + 1, items[offset: offset + batch_size]
 
+    @staticmethod
+    def _generation_job_id() -> int | None:
+        raw = os.getenv("PREMIUM_GENERATION_JOB_ID", "").strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _publish_bootstrap_progress(cls, *, progress_pct: int, message: str) -> None:
+        """Publish lightweight progress to the dashboard without touching Premium logic."""
+        job_id = cls._generation_job_id()
+        if job_id is None:
+            return
+        PremiumGenerationJob.objects.filter(pk=job_id).update(
+            current_stage="BOOTSTRAP_V8",
+            progress_pct=max(BOOTSTRAP_PROGRESS_START, min(BOOTSTRAP_PROGRESS_END, int(progress_pct))),
+            message=message[:255],
+        )
+
+    @staticmethod
+    def _progress_pct(done: int, total: int) -> int:
+        if total <= 0:
+            return BOOTSTRAP_PROGRESS_START
+        span = BOOTSTRAP_PROGRESS_END - BOOTSTRAP_PROGRESS_START
+        return BOOTSTRAP_PROGRESS_START + int((max(0, min(done, total)) / total) * span)
+
     def _bootstrap_v8(self, target_date: date, *, limit: int, batch_size: int) -> None:
         start, end = window_bounds(target_date)
         from django.utils import timezone
@@ -142,6 +175,10 @@ class Command(BaseCommand):
 
         fixtures = [fixture for fixture in raw_fixtures if not classify_competition(fixture).excluded]
         if not fixtures:
+            self._publish_bootstrap_progress(
+                progress_pct=BOOTSTRAP_PROGRESS_END,
+                message=f"Bootstrap V8: 0 partidos profesionales en {window_label()}.",
+            )
             self.stdout.write(
                 f"[v8-bootstrap] no future professional fixtures to score in window={window_label()}"
             )
@@ -155,43 +192,108 @@ class Command(BaseCommand):
             "full-window coverage enabled.",
             ending="\n",
         )
+        self._publish_bootstrap_progress(
+            progress_pct=BOOTSTRAP_PROGRESS_START,
+            message=(
+                f"Bootstrap V8: {len(fixtures)} partidos profesionales · "
+                f"{total_batches} lotes de hasta {batch_size}. Iniciando lote 1/{total_batches}."
+            ),
+        )
 
         engine = ScoreEngineV8()
         evaluated = 0
         created_total = 0
         updated_total = 0
         unchanged_total = 0
+        bootstrap_started = perf_counter()
 
         for batch_no, batch in self._chunks(fixtures, batch_size):
+            batch_start_evaluated = evaluated
+            batch_started = perf_counter()
             self.stdout.write(
                 f"[v8-bootstrap] batch {batch_no}/{total_batches} preload fixtures={len(batch)}...",
                 ending="\n",
             )
+            self._publish_bootstrap_progress(
+                progress_pct=self._progress_pct(evaluated, len(fixtures)),
+                message=(
+                    f"Lote {batch_no}/{total_batches} · precargando {len(batch)} partidos · "
+                    f"{evaluated}/{len(fixtures)} evaluados."
+                ),
+            )
+
+            preload_started = perf_counter()
             preloader = BatchFeatureEngineeringService(
                 batch,
                 progress=lambda message: self.stdout.write(message, ending="\n"),
             )
             preloader.preload()
+            preload_seconds = perf_counter() - preload_started
+            self._publish_bootstrap_progress(
+                progress_pct=self._progress_pct(evaluated, len(fixtures)),
+                message=(
+                    f"Lote {batch_no}/{total_batches} · preload listo en {preload_seconds:.1f}s · "
+                    f"evaluando {len(batch)} partidos."
+                ),
+            )
 
+            evaluation_started = perf_counter()
             evaluated_rows: list[tuple[Fixture, dict]] = []
-            for fixture in batch:
+            for batch_index, fixture in enumerate(batch, start=1):
                 features = preloader.build(fixture)
                 result = engine.evaluate(fixture, features)
                 evaluated += 1
                 for evaluation in result.values():
                     evaluated_rows.append((fixture, evaluation))
 
+                if batch_index % 25 == 0 or batch_index == len(batch):
+                    self._publish_bootstrap_progress(
+                        progress_pct=self._progress_pct(evaluated, len(fixtures)),
+                        message=(
+                            f"Lote {batch_no}/{total_batches} · evaluando · "
+                            f"{evaluated}/{len(fixtures)} partidos completados."
+                        ),
+                    )
+            evaluation_seconds = perf_counter() - evaluation_started
+
+            persistence_started = perf_counter()
+            self._publish_bootstrap_progress(
+                progress_pct=self._progress_pct(evaluated, len(fixtures)),
+                message=(
+                    f"Lote {batch_no}/{total_batches} · evaluación {evaluation_seconds:.1f}s · "
+                    f"guardando {len(evaluated_rows)} predicciones."
+                ),
+            )
             created, updated, unchanged = self._bulk_persist_evaluations(evaluated_rows)
+            persistence_seconds = perf_counter() - persistence_started
             created_total += created
             updated_total += updated
             unchanged_total += unchanged
+            batch_seconds = perf_counter() - batch_started
+
             self.stdout.write(
                 f"[v8-bootstrap] batch {batch_no}/{total_batches} complete; "
                 f"evaluated_total={evaluated}/{len(fixtures)} rows={len(evaluated_rows)} "
-                f"created={created} updated={updated} unchanged={unchanged}",
+                f"created={created} updated={updated} unchanged={unchanged} "
+                f"preload={preload_seconds:.2f}s evaluate={evaluation_seconds:.2f}s "
+                f"persist={persistence_seconds:.2f}s total={batch_seconds:.2f}s",
                 ending="\n",
             )
+            self._publish_bootstrap_progress(
+                progress_pct=self._progress_pct(evaluated, len(fixtures)),
+                message=(
+                    f"Lote {batch_no}/{total_batches} completado · "
+                    f"{evaluated}/{len(fixtures)} partidos · preload {preload_seconds:.1f}s · "
+                    f"eval {evaluation_seconds:.1f}s · DB {persistence_seconds:.1f}s."
+                ),
+            )
 
+            if evaluated <= batch_start_evaluated:
+                raise RuntimeError(
+                    f"Bootstrap V8 made no progress in batch {batch_no}/{total_batches}; aborting instead of hanging."
+                )
+
+        bootstrap_seconds = perf_counter() - bootstrap_started
         tier_a = Prediction.objects.filter(
             model_version=V8_MODEL_VERSION,
             fixture__kickoff__gte=future_start,
@@ -207,11 +309,19 @@ class Command(BaseCommand):
             "fixtures_evaluated": evaluated,
             "batches": total_batches,
             "batch_size": batch_size,
+            "bootstrap_seconds": round(bootstrap_seconds, 3),
             "predictions_created": created_total,
             "predictions_updated": updated_total,
             "predictions_unchanged": unchanged_total,
             "raw_tier_a": tier_a,
         }
+        self._publish_bootstrap_progress(
+            progress_pct=BOOTSTRAP_PROGRESS_END,
+            message=(
+                f"Bootstrap V8 completo · {evaluated}/{len(fixtures)} partidos · "
+                f"{total_batches} lotes · {bootstrap_seconds:.1f}s · Tier A raw={tier_a}."
+            ),
+        )
         self.stdout.write(json.dumps(payload, ensure_ascii=False, default=str))
         self.stdout.write(self.style.SUCCESS(
             f"Batched V8 bootstrap complete: {evaluated}/{len(fixtures)} professional fixtures "
