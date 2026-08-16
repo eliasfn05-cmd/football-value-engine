@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django.utils import timezone
 
 from engine.batch_features import BatchFeatureEngineeringService
 from engine.competition_quality import classify_competition
 from engine.models import Fixture, Prediction
 from engine.score_v8 import ScoreEngineV8, V8_MODEL_VERSION
+from engine.time_window import window_bounds, window_label
 from scanner.providers.api_football import APIFootballProvider
 from scanner.service import DailyScanner
 
@@ -114,8 +114,8 @@ class Command(BaseCommand):
         return len(to_create), len(to_update), unchanged
 
     def _bootstrap_v8(self, target_date: date, *, limit: int) -> None:
-        start = timezone.make_aware(datetime.combine(target_date, time.min))
-        end = start + timedelta(days=1)
+        start, end = window_bounds(target_date)
+        from django.utils import timezone
         future_start = max(start, timezone.now())
 
         raw_fixtures = list(
@@ -125,11 +125,14 @@ class Command(BaseCommand):
         )
         fixtures = [fixture for fixture in raw_fixtures if not classify_competition(fixture).excluded]
         if not fixtures:
-            self.stdout.write("[v8-bootstrap] no future professional fixtures to score")
+            self.stdout.write(
+                f"[v8-bootstrap] no future professional fixtures to score in window={window_label()}"
+            )
             return
 
         self.stdout.write(
-            f"[v8-bootstrap] future={len(raw_fixtures)} professional={len(fixtures)}; shared feature preload...",
+            f"[v8-bootstrap] window={window_label()} future={len(raw_fixtures)} "
+            f"professional={len(fixtures)}; shared feature preload...",
             ending="\n",
         )
         preloader = BatchFeatureEngineeringService(
@@ -149,17 +152,20 @@ class Command(BaseCommand):
                 evaluated_rows.append((fixture, evaluation))
             if idx == 1 or idx % 50 == 0 or idx == len(fixtures):
                 self.stdout.write(
-                    f"[v8-bootstrap] evaluated {idx}/{len(fixtures)} in memory; pending_rows={len(evaluated_rows)}",
+                    f"[v8-bootstrap] evaluated {idx}/{len(fixtures)} in memory; "
+                    f"pending_rows={len(evaluated_rows)}",
                     ending="\n",
                 )
 
         self.stdout.write(
-            f"[v8-bootstrap] bulk persistence start rows={len(evaluated_rows)} batch_size={PERSIST_BATCH_SIZE}",
+            f"[v8-bootstrap] bulk persistence start rows={len(evaluated_rows)} "
+            f"batch_size={PERSIST_BATCH_SIZE}",
             ending="\n",
         )
         created, updated, unchanged = self._bulk_persist_evaluations(evaluated_rows)
         self.stdout.write(
-            f"[v8-bootstrap] bulk persistence complete created={created} updated={updated} unchanged={unchanged}",
+            f"[v8-bootstrap] bulk persistence complete created={created} updated={updated} "
+            f"unchanged={unchanged}",
             ending="\n",
         )
 
@@ -171,6 +177,7 @@ class Command(BaseCommand):
         ).count()
         payload = {
             "date": target_date.isoformat(),
+            "window": window_label(),
             "model_version": V8_MODEL_VERSION,
             "future_professional_fixtures": len(fixtures),
             "fixtures_evaluated": evaluated,
@@ -181,7 +188,8 @@ class Command(BaseCommand):
         }
         self.stdout.write(json.dumps(payload, ensure_ascii=False, default=str))
         self.stdout.write(self.style.SUCCESS(
-            f"Fast V8 bootstrap complete: {evaluated} future fixtures, raw Tier A={tier_a}."
+            f"Fast V8 bootstrap complete: {evaluated} future fixtures in {window_label()}, "
+            f"raw Tier A={tier_a}."
         ))
 
     def handle(self, *args, **options):
@@ -205,5 +213,6 @@ class Command(BaseCommand):
         report["app_timezone"] = timezone_name
         self.stdout.write(json.dumps(report, indent=2, ensure_ascii=False, default=str))
         self.stdout.write(self.style.SUCCESS(
-            f"Scanned {report['fixtures_scanned']} fixtures; Betano coverage {report['coverage_betano_pct']}%; Tier A selections: {len(report['tier_a'])}"
+            f"Scanned {report['fixtures_scanned']} fixtures; Betano coverage {report['coverage_betano_pct']}%; "
+            f"Tier A selections: {len(report['tier_a'])}"
         ))
