@@ -19,6 +19,7 @@ from scanner.service import DailyScanner
 
 
 PERSIST_BATCH_SIZE = 500
+DEFAULT_BOOTSTRAP_BATCH_SIZE = 100
 
 
 class Command(BaseCommand):
@@ -29,13 +30,19 @@ class Command(BaseCommand):
         parser.add_argument(
             "--v8-bootstrap",
             action="store_true",
-            help="Score only future, non-excluded fixtures with one shared batch preload.",
+            help="Score only future, non-excluded fixtures with shared batch preloads.",
         )
         parser.add_argument(
             "--limit",
             type=int,
-            default=400,
-            help="Maximum future fixtures for --v8-bootstrap (default: 400).",
+            default=0,
+            help="Maximum future fixtures for --v8-bootstrap. 0 = all fixtures in the selected kickoff window.",
+        )
+        parser.add_argument(
+            "--batch-size",
+            type=int,
+            default=DEFAULT_BOOTSTRAP_BATCH_SIZE,
+            help=f"Fixtures per V8 preload/evaluation batch (default: {DEFAULT_BOOTSTRAP_BATCH_SIZE}).",
         )
 
     @staticmethod
@@ -113,16 +120,26 @@ class Command(BaseCommand):
 
         return len(to_create), len(to_update), unchanged
 
-    def _bootstrap_v8(self, target_date: date, *, limit: int) -> None:
+    @staticmethod
+    def _chunks(items: list[Fixture], batch_size: int):
+        for offset in range(0, len(items), batch_size):
+            yield offset // batch_size + 1, items[offset: offset + batch_size]
+
+    def _bootstrap_v8(self, target_date: date, *, limit: int, batch_size: int) -> None:
         start, end = window_bounds(target_date)
         from django.utils import timezone
         future_start = max(start, timezone.now())
 
-        raw_fixtures = list(
+        queryset = (
             Fixture.objects.select_related("home_team", "away_team", "competition_ref")
             .filter(kickoff__gte=future_start, kickoff__lt=end)
-            .order_by("kickoff")[: max(1, limit)]
+            .order_by("kickoff", "id")
         )
+        if limit > 0:
+            raw_fixtures = list(queryset[:limit])
+        else:
+            raw_fixtures = list(queryset)
+
         fixtures = [fixture for fixture in raw_fixtures if not classify_competition(fixture).excluded]
         if not fixtures:
             self.stdout.write(
@@ -130,44 +147,50 @@ class Command(BaseCommand):
             )
             return
 
+        batch_size = max(10, int(batch_size or DEFAULT_BOOTSTRAP_BATCH_SIZE))
+        total_batches = (len(fixtures) + batch_size - 1) // batch_size
         self.stdout.write(
-            f"[v8-bootstrap] window={window_label()} future={len(raw_fixtures)} "
-            f"professional={len(fixtures)}; shared feature preload...",
+            f"[v8-bootstrap] window={window_label()} discovered={len(raw_fixtures)} "
+            f"professional={len(fixtures)} batches={total_batches} batch_size={batch_size}; "
+            "full-window coverage enabled.",
             ending="\n",
         )
-        preloader = BatchFeatureEngineeringService(
-            fixtures,
-            progress=lambda message: self.stdout.write(message, ending="\n"),
-        )
-        preloader.preload()
+
         engine = ScoreEngineV8()
-
-        evaluated_rows: list[tuple[Fixture, dict]] = []
         evaluated = 0
-        for idx, fixture in enumerate(fixtures, start=1):
-            features = preloader.build(fixture)
-            result = engine.evaluate(fixture, features)
-            evaluated += 1
-            for evaluation in result.values():
-                evaluated_rows.append((fixture, evaluation))
-            if idx == 1 or idx % 50 == 0 or idx == len(fixtures):
-                self.stdout.write(
-                    f"[v8-bootstrap] evaluated {idx}/{len(fixtures)} in memory; "
-                    f"pending_rows={len(evaluated_rows)}",
-                    ending="\n",
-                )
+        created_total = 0
+        updated_total = 0
+        unchanged_total = 0
 
-        self.stdout.write(
-            f"[v8-bootstrap] bulk persistence start rows={len(evaluated_rows)} "
-            f"batch_size={PERSIST_BATCH_SIZE}",
-            ending="\n",
-        )
-        created, updated, unchanged = self._bulk_persist_evaluations(evaluated_rows)
-        self.stdout.write(
-            f"[v8-bootstrap] bulk persistence complete created={created} updated={updated} "
-            f"unchanged={unchanged}",
-            ending="\n",
-        )
+        for batch_no, batch in self._chunks(fixtures, batch_size):
+            self.stdout.write(
+                f"[v8-bootstrap] batch {batch_no}/{total_batches} preload fixtures={len(batch)}...",
+                ending="\n",
+            )
+            preloader = BatchFeatureEngineeringService(
+                batch,
+                progress=lambda message: self.stdout.write(message, ending="\n"),
+            )
+            preloader.preload()
+
+            evaluated_rows: list[tuple[Fixture, dict]] = []
+            for fixture in batch:
+                features = preloader.build(fixture)
+                result = engine.evaluate(fixture, features)
+                evaluated += 1
+                for evaluation in result.values():
+                    evaluated_rows.append((fixture, evaluation))
+
+            created, updated, unchanged = self._bulk_persist_evaluations(evaluated_rows)
+            created_total += created
+            updated_total += updated
+            unchanged_total += unchanged
+            self.stdout.write(
+                f"[v8-bootstrap] batch {batch_no}/{total_batches} complete; "
+                f"evaluated_total={evaluated}/{len(fixtures)} rows={len(evaluated_rows)} "
+                f"created={created} updated={updated} unchanged={unchanged}",
+                ending="\n",
+            )
 
         tier_a = Prediction.objects.filter(
             model_version=V8_MODEL_VERSION,
@@ -179,17 +202,20 @@ class Command(BaseCommand):
             "date": target_date.isoformat(),
             "window": window_label(),
             "model_version": V8_MODEL_VERSION,
+            "future_discovered_fixtures": len(raw_fixtures),
             "future_professional_fixtures": len(fixtures),
             "fixtures_evaluated": evaluated,
-            "predictions_created": created,
-            "predictions_updated": updated,
-            "predictions_unchanged": unchanged,
+            "batches": total_batches,
+            "batch_size": batch_size,
+            "predictions_created": created_total,
+            "predictions_updated": updated_total,
+            "predictions_unchanged": unchanged_total,
             "raw_tier_a": tier_a,
         }
         self.stdout.write(json.dumps(payload, ensure_ascii=False, default=str))
         self.stdout.write(self.style.SUCCESS(
-            f"Fast V8 bootstrap complete: {evaluated} future fixtures in {window_label()}, "
-            f"raw Tier A={tier_a}."
+            f"Batched V8 bootstrap complete: {evaluated}/{len(fixtures)} professional fixtures "
+            f"evaluated in {window_label()}, raw Tier A={tier_a}."
         ))
 
     def handle(self, *args, **options):
@@ -201,7 +227,11 @@ class Command(BaseCommand):
             raise CommandError("Invalid --date or APP_TIMEZONE") from exc
 
         if options.get("v8_bootstrap"):
-            self._bootstrap_v8(target_date, limit=int(options.get("limit") or 400))
+            self._bootstrap_v8(
+                target_date,
+                limit=int(options.get("limit") or 0),
+                batch_size=int(options.get("batch_size") or DEFAULT_BOOTSTRAP_BATCH_SIZE),
+            )
             return
 
         try:
