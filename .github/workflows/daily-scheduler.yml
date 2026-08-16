@@ -93,10 +93,11 @@ jobs:
             export PREMIUM_INTERACTIVE_FAST=1 PREMIUM_WINDOW_START="$START" PREMIUM_WINDOW_END="$END"
             python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='INGEST',progress_pct=3,message='Carga rápida de fixtures.',started_at=timezone.now(),finished_at=None)"
             python manage.py ingest_daily --date "$DATE" --fixtures-only
-            python manage.py shell -c "from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB).update(current_stage='BOOTSTRAP_V8',progress_pct=8,message='Bootstrap rápido del bloque $START-$END.')"
-            # Aggressive interactive mode: 120 chronological fixtures are enough for broad recall;
-            # expensive complete evidence is restored on the candidate shortlist before Premium admission.
-            python manage.py scan_daily --date "$DATE" --v8-bootstrap --limit 120
+            python manage.py shell -c "from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB).update(current_stage='BOOTSTRAP_V8',progress_pct=8,message='Bootstrap por lotes del bloque $START-$END; cobertura completa del rango.')"
+            # Full-window recall: no fixture cap. The command processes the selected
+            # kickoff range in bounded batches, while expensive evidence remains
+            # reserved for the candidate shortlist before Premium admission.
+            python manage.py scan_daily --date "$DATE" --v8-bootstrap --limit 0 --batch-size 100
             python manage.py daily_pipeline --mode refresh --date "$DATE" --attempts 1 --retry-delay 0 --generation-job-id "$JOB"
           else
             python manage.py daily_pipeline --mode "$MODE" --date "$DATE" --attempts 3 --retry-delay 5
