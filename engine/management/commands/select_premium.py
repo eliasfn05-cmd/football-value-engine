@@ -7,7 +7,9 @@ from backtesting.premium_settlement import settle_published_premium
 from engine.models import Prediction
 from engine.premium_replacement import PremiumReplacementService
 from engine.premium_risk_guard import PremiumRiskGuard
+from engine.premium_selection import DailyPremiumSelector
 from engine.score_v8 import V8_MODEL_VERSION
+from engine.time_window import window_bounds, window_label
 
 
 class Command(BaseCommand):
@@ -23,11 +25,17 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
+        # Performance-only execution scope. The selector's probability, EV,
+        # reliability, risk guards, tier rules and ranking formula are untouched;
+        # only the fixture kickoff universe is narrowed to the requested block.
+        DailyPremiumSelector._bounds = staticmethod(lambda value: window_bounds(value))
+
         ledger = settle_published_premium(model_version=V8_MODEL_VERSION)
         self.stdout.write(
             f"[premium-ledger] settled={ledger.get('settled', 0)} wins={ledger.get('wins', 0)} "
             f"losses={ledger.get('losses', 0)} voids={ledger.get('voids', 0)}"
         )
+        self.stdout.write(f"[premium] kickoff_window={window_label()}")
 
         replacement = PremiumReplacementService(max_picks=options["max_picks"])
         rows = replacement.reconcile(target_date, trigger="select_premium")
@@ -35,8 +43,7 @@ class Command(BaseCommand):
 
         if not rows:
             self.stdout.write("[premium] NO BET: no prediction cleared Sprint 7.10 professional value gates")
-            start = timezone.make_aware(datetime.combine(target_date, time.min))
-            end = start + timedelta(days=1)
+            start, end = window_bounds(target_date)
             future_start = max(start, timezone.now())
             near = (
                 Prediction.objects.select_related(
@@ -82,4 +89,7 @@ class Command(BaseCommand):
                 f"cal_edge={calibration.calibrated_edge:.3f} reliable_ev={calibration.reliable_ev:.3f} "
                 f"reliability={calibration.reliability:.3f} score={prediction.score}{promotion_suffix}"
             )
-        self.stdout.write(self.style.SUCCESS(f"[premium] selected={len(rows)} ledgered={len(rows)} auto_replacement=enabled sprint7.10_risk_guard=enabled"))
+        self.stdout.write(self.style.SUCCESS(
+            f"[premium] selected={len(rows)} ledgered={len(rows)} auto_replacement=enabled "
+            f"sprint7.10_risk_guard=enabled window={window_label()}"
+        ))
