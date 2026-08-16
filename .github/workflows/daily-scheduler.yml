@@ -24,6 +24,16 @@ on:
         description: "Optional date YYYY-MM-DD; blank = current date in America/Lima"
         required: false
         type: string
+      start_time:
+        description: "Kickoff window start HH:MM (America/Lima)"
+        required: false
+        default: "00:00"
+        type: string
+      end_time:
+        description: "Kickoff window end HH:MM inclusive (America/Lima)"
+        required: false
+        default: "23:59"
+        type: string
       generation_job_id:
         description: "Optional dashboard PremiumGenerationJob id"
         required: false
@@ -45,9 +55,6 @@ jobs:
       DEBUG: "False"
       ALLOWED_HOSTS: localhost,127.0.0.1
       DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
-      # Performance-only PostgreSQL session tuning. This does not alter model,
-      # features, thresholds, Premium filters or selected data; it only gives
-      # the existing window/sort preload queries enough memory to avoid disk spills.
       PGOPTIONS: "-c work_mem=128MB -c jit=off"
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
       ODDS_API_IO_KEY: ${{ secrets.ODDS_API_IO_KEY }}
@@ -94,6 +101,8 @@ jobs:
         env:
           MANUAL_MODE: ${{ github.event.inputs.mode }}
           MANUAL_DATE: ${{ github.event.inputs.target_date }}
+          MANUAL_START_TIME: ${{ github.event.inputs.start_time }}
+          MANUAL_END_TIME: ${{ github.event.inputs.end_time }}
           GENERATION_JOB_ID: ${{ github.event.inputs.generation_job_id }}
           SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
         run: |
@@ -113,10 +122,15 @@ jobs:
             TARGET_DATE="$(TZ=America/Lima date +%F)"
           fi
 
+          START_TIME="${MANUAL_START_TIME:-00:00}"
+          END_TIME="${MANUAL_END_TIME:-23:59}"
+
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "start_time=$START_TIME" >> "$GITHUB_OUTPUT"
+          echo "end_time=$END_TIME" >> "$GITHUB_OUTPUT"
           echo "generation_job_id=${GENERATION_JOB_ID:-}" >> "$GITHUB_OUTPUT"
-          echo "Resolved requested mode=$MODE target_date=$TARGET_DATE generation_job_id=${GENERATION_JOB_ID:-none}"
+          echo "Resolved requested mode=$MODE target_date=$TARGET_DATE window=$START_TIME-$END_TIME generation_job_id=${GENERATION_JOB_ID:-none}"
 
       - name: Verify production schema is current
         run: python manage.py migrate --check
@@ -129,34 +143,14 @@ jobs:
           FAST="0"
           BOOTSTRAP="0"
           JOB_ID="${{ steps.schedule.outputs.generation_job_id }}"
-          TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
 
           if [ -n "$JOB_ID" ]; then
-            COUNTS=$(python manage.py shell -c "from datetime import datetime,time,timedelta; from django.utils import timezone; from engine.models import Fixture,Prediction; from engine.score_v8 import V8_MODEL_VERSION; d=datetime.fromisoformat('$TARGET_DATE').date(); s=timezone.make_aware(datetime.combine(d,time.min)); e=s+timedelta(days=1); now=timezone.now(); fs=max(s,now); f=Fixture.objects.filter(kickoff__gte=fs,kickoff__lt=e).count(); p=Prediction.objects.filter(model_version=V8_MODEL_VERSION,fixture__kickoff__gte=fs,fixture__kickoff__lt=e).values('fixture_id').distinct().count(); print(f'{p} {f}')")
-            PREDICTED_FIXTURES=$(echo "$COUNTS" | awk '{print $1}')
-            FUTURE_FIXTURES=$(echo "$COUNTS" | awk '{print $2}')
-            REQUIRED=8
-            if [ "$FUTURE_FIXTURES" -lt "$REQUIRED" ]; then REQUIRED="$FUTURE_FIXTURES"; fi
-
-            echo "Interactive coverage: predicted_fixtures=$PREDICTED_FIXTURES future_fixtures=$FUTURE_FIXTURES required=$REQUIRED"
+            # Dashboard requests are now explicitly block-scoped. We always do a
+            # cheap fixture ingest, bootstrap only that kickoff range, then run the
+            # unchanged selective refresh/Deep/Premium pipeline on that same range.
             FAST="1"
-
-            # Critical distinction for future dates: if the target card is not yet
-            # stored, refresh/bootstrap cannot discover matches by themselves.
-            # Preserve the fast path only when fixtures already exist; otherwise
-            # run the normal full pipeline so INGEST executes before SCORE_V8.
-            if [ "$FUTURE_FIXTURES" -eq 0 ]; then
-              MODE="full"
-              BOOTSTRAP="0"
-              echo "No future fixtures stored for target date: full INGEST + SCORE_V8 required before Premium selection."
-            elif [ "$REQUIRED" -gt 0 ] && [ "$PREDICTED_FIXTURES" -ge "$REQUIRED" ]; then
-              MODE="refresh"
-              echo "Usable score seed detected: selective Premium refresh only."
-            else
-              MODE="refresh"
-              BOOTSTRAP="1"
-              echo "Fixtures exist but score seed is incomplete: fast future-only V8 bootstrap required."
-            fi
+            BOOTSTRAP="1"
+            MODE="refresh"
           fi
 
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
@@ -172,6 +166,8 @@ jobs:
           RETRY_DELAY=5
           PIPELINE_MODE="${{ steps.execution.outputs.mode }}"
           TARGET_DATE="${{ steps.schedule.outputs.target_date }}"
+          START_TIME="${{ steps.schedule.outputs.start_time }}"
+          END_TIME="${{ steps.schedule.outputs.end_time }}"
           JOB_ID="${{ steps.schedule.outputs.generation_job_id }}"
 
           if [ -n "$JOB_ID" ]; then
@@ -179,25 +175,26 @@ jobs:
             ATTEMPTS=1
             RETRY_DELAY=0
             export PREMIUM_INTERACTIVE_FAST=1
-            echo "Interactive Premium optimization enabled."
+            export PREMIUM_WINDOW_START="$START_TIME"
+            export PREMIUM_WINDOW_END="$END_TIME"
+            echo "Interactive Premium block optimization enabled: $TARGET_DATE $START_TIME-$END_TIME."
 
-            INITIAL_STAGE="BOOTSTRAP_V8"
-            INITIAL_MESSAGE="Worker activo; preparando bootstrap V8 de partidos futuros."
-            if [ "$PIPELINE_MODE" = "full" ]; then
-              INITIAL_STAGE="INGEST"
-              INITIAL_MESSAGE="Worker activo; cargando partidos de la fecha antes del scoring V8."
-            fi
-            python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; j=PremiumGenerationJob.objects.filter(pk=$JOB_ID).first(); j and PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='$INITIAL_STAGE',progress_pct=5,message='$INITIAL_MESSAGE',started_at=timezone.now(),finished_at=None)"
+            python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; j=PremiumGenerationJob.objects.filter(pk=$JOB_ID).first(); j and PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='INGEST',progress_pct=3,message='Worker activo; cargando fixtures antes del bootstrap del bloque.',started_at=timezone.now(),finished_at=None)"
 
-            if [ "${{ steps.execution.outputs.bootstrap }}" = "1" ]; then
-              echo "Building fast future-only V8 seed before candidate selection..."
-              python manage.py scan_daily \
-                --date "$TARGET_DATE" \
-                --v8-bootstrap \
-                --limit 400
-              echo "Fast V8 bootstrap complete; continuing with selective Premium refresh."
-              PIPELINE_MODE="refresh"
-            fi
+            # Fixture discovery is cheap and remains date-wide so the selected
+            # block is guaranteed to exist locally. Expensive work starts only
+            # after this point and is restricted by PREMIUM_WINDOW_START/END.
+            python manage.py ingest_daily --date "$TARGET_DATE" --fixtures-only
+
+            python manage.py shell -c "from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(current_stage='BOOTSTRAP_V8',progress_pct=8,message='Evaluando únicamente partidos del bloque $START_TIME-$END_TIME.')"
+
+            python manage.py scan_daily \
+              --date "$TARGET_DATE" \
+              --v8-bootstrap \
+              --limit 400
+
+            echo "Block V8 bootstrap complete; continuing selective Premium refresh."
+            PIPELINE_MODE="refresh"
           fi
 
           python manage.py daily_pipeline \
