@@ -90,7 +90,7 @@ jobs:
         run: |
           MODE="${{ steps.schedule.outputs.mode }}"; DATE="${{ steps.schedule.outputs.target_date }}"; START="${{ steps.schedule.outputs.start_time }}"; END="${{ steps.schedule.outputs.end_time }}"; JOB="${{ steps.schedule.outputs.generation_job_id }}"
           if [ -n "$JOB" ]; then
-            export PREMIUM_INTERACTIVE_FAST=1 PREMIUM_WINDOW_START="$START" PREMIUM_WINDOW_END="$END"
+            export PREMIUM_INTERACTIVE_FAST=1 PREMIUM_WINDOW_START="$START" PREMIUM_WINDOW_END="$END" PREMIUM_GENERATION_JOB_ID="$JOB"
             python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='INGEST',progress_pct=3,message='Carga rápida de fixtures.',started_at=timezone.now(),finished_at=None)"
             python manage.py ingest_daily --date "$DATE" --fixtures-only
             python manage.py shell -c "from scanner.models import PremiumGenerationJob; PremiumGenerationJob.objects.filter(pk=$JOB).update(current_stage='BOOTSTRAP_V8',progress_pct=8,message='Bootstrap por lotes del bloque $START-$END; cobertura completa del rango.')"
