@@ -136,12 +136,22 @@ jobs:
 
             echo "Interactive coverage: predicted_fixtures=$PREDICTED_FIXTURES future_fixtures=$FUTURE_FIXTURES required=$REQUIRED"
             FAST="1"
-            MODE="refresh"
-            if [ "$REQUIRED" -gt 0 ] && [ "$PREDICTED_FIXTURES" -ge "$REQUIRED" ]; then
+
+            # Critical distinction for future dates: if the target card is not yet
+            # stored, refresh/bootstrap cannot discover matches by themselves.
+            # Preserve the fast path only when fixtures already exist; otherwise
+            # run the normal full pipeline so INGEST executes before SCORE_V8.
+            if [ "$FUTURE_FIXTURES" -eq 0 ]; then
+              MODE="full"
+              BOOTSTRAP="0"
+              echo "No future fixtures stored for target date: full INGEST + SCORE_V8 required before Premium selection."
+            elif [ "$REQUIRED" -gt 0 ] && [ "$PREDICTED_FIXTURES" -ge "$REQUIRED" ]; then
+              MODE="refresh"
               echo "Usable score seed detected: selective Premium refresh only."
             else
+              MODE="refresh"
               BOOTSTRAP="1"
-              echo "No usable score seed: fast future-only V8 bootstrap required."
+              echo "Fixtures exist but score seed is incomplete: fast future-only V8 bootstrap required."
             fi
           fi
 
@@ -167,10 +177,13 @@ jobs:
             export PREMIUM_INTERACTIVE_FAST=1
             echo "Interactive Premium optimization enabled."
 
-            # Claim the dashboard job immediately. The previous flow only marked
-            # it RUNNING after the bootstrap, so the dashboard declared a false
-            # 'worker no reclamó' timeout while GitHub Actions was actually busy.
-            python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; j=PremiumGenerationJob.objects.filter(pk=$JOB_ID).first(); j and PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='BOOTSTRAP_V8',progress_pct=5,message='Worker activo; preparando bootstrap V8 de partidos futuros.',started_at=timezone.now(),finished_at=None)"
+            INITIAL_STAGE="BOOTSTRAP_V8"
+            INITIAL_MESSAGE="Worker activo; preparando bootstrap V8 de partidos futuros."
+            if [ "$PIPELINE_MODE" = "full" ]; then
+              INITIAL_STAGE="INGEST"
+              INITIAL_MESSAGE="Worker activo; cargando partidos de la fecha antes del scoring V8."
+            fi
+            python manage.py shell -c "from django.utils import timezone; from scanner.models import PremiumGenerationJob; j=PremiumGenerationJob.objects.filter(pk=$JOB_ID).first(); j and PremiumGenerationJob.objects.filter(pk=$JOB_ID).update(status=PremiumGenerationJob.STATUS_RUNNING,current_stage='$INITIAL_STAGE',progress_pct=5,message='$INITIAL_MESSAGE',started_at=timezone.now(),finished_at=None)"
 
             if [ "${{ steps.execution.outputs.bootstrap }}" = "1" ]; then
               echo "Building fast future-only V8 seed before candidate selection..."
