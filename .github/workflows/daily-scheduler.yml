@@ -45,6 +45,10 @@ jobs:
       DEBUG: "False"
       ALLOWED_HOSTS: localhost,127.0.0.1
       DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+      # Performance-only PostgreSQL session tuning. This does not alter model,
+      # features, thresholds, Premium filters or selected data; it only gives
+      # the existing window/sort preload queries enough memory to avoid disk spills.
+      PGOPTIONS: "-c work_mem=128MB -c jit=off"
       API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
       ODDS_API_IO_KEY: ${{ secrets.ODDS_API_IO_KEY }}
       ODDS_API_IO_BOOKMAKERS: Betano,Bet365,Betfair,Unibet,1xBet,Betway
