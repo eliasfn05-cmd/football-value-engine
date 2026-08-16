@@ -18,6 +18,9 @@ from scanner.providers.api_football import APIFootballProvider
 from scanner.service import DailyScanner
 
 
+PERSIST_BATCH_SIZE = 500
+
+
 class Command(BaseCommand):
     help = "Scan one date or run a fast future-only V8 bootstrap for interactive Premium generation."
 
@@ -55,6 +58,61 @@ class Command(BaseCommand):
             "reasons": evaluation["reasons"],
         }
 
+    @staticmethod
+    def _prediction_changed(pred: Prediction, defaults: dict) -> bool:
+        return any(getattr(pred, field) != value for field, value in defaults.items())
+
+    @classmethod
+    def _bulk_persist_evaluations(cls, evaluated_rows: list[tuple[Fixture, dict]]) -> tuple[int, int, int]:
+        """Persist unchanged V8 evaluations with bounded remote DB round trips."""
+        if not evaluated_rows:
+            return 0, 0, 0
+
+        fixture_ids = {fixture.id for fixture, _evaluation in evaluated_rows}
+        existing: dict[tuple[int, str, str], Prediction] = {}
+        existing_qs = Prediction.objects.filter(
+            model_version=V8_MODEL_VERSION,
+            fixture_id__in=fixture_ids,
+        ).order_by("id")
+        for pred in existing_qs.iterator(chunk_size=2000):
+            existing.setdefault((pred.fixture_id, pred.market, pred.selection), pred)
+
+        to_create: list[Prediction] = []
+        to_update: list[Prediction] = []
+        unchanged = 0
+        for fixture, evaluation in evaluated_rows:
+            key = (fixture.id, evaluation["market"], evaluation["selection"])
+            defaults = cls._defaults(evaluation)
+            pred = existing.get(key)
+            if pred is None:
+                pred = Prediction(
+                    fixture=fixture,
+                    model_version=V8_MODEL_VERSION,
+                    market=evaluation["market"],
+                    selection=evaluation["selection"],
+                    **defaults,
+                )
+                to_create.append(pred)
+                existing[key] = pred
+            elif cls._prediction_changed(pred, defaults):
+                for field, value in defaults.items():
+                    setattr(pred, field, value)
+                to_update.append(pred)
+            else:
+                unchanged += 1
+
+        update_fields = [
+            "probability", "fair_odds", "market_odds", "edge",
+            "expected_value", "score", "tier", "reasons",
+        ]
+        with transaction.atomic():
+            if to_create:
+                Prediction.objects.bulk_create(to_create, batch_size=PERSIST_BATCH_SIZE)
+            if to_update:
+                Prediction.objects.bulk_update(to_update, update_fields, batch_size=PERSIST_BATCH_SIZE)
+
+        return len(to_create), len(to_update), unchanged
+
     def _bootstrap_v8(self, target_date: date, *, limit: int) -> None:
         start = timezone.make_aware(datetime.combine(target_date, time.min))
         end = start + timedelta(days=1)
@@ -81,31 +139,29 @@ class Command(BaseCommand):
         preloader.preload()
         engine = ScoreEngineV8()
 
-        created = 0
-        updated = 0
+        evaluated_rows: list[tuple[Fixture, dict]] = []
         evaluated = 0
-        with transaction.atomic():
-            for idx, fixture in enumerate(fixtures, start=1):
-                features = preloader.build(fixture)
-                result = engine.evaluate(fixture, features)
-                evaluated += 1
-                for evaluation in result.values():
-                    _, was_created = Prediction.objects.update_or_create(
-                        fixture=fixture,
-                        model_version=V8_MODEL_VERSION,
-                        market=evaluation["market"],
-                        selection=evaluation["selection"],
-                        defaults=self._defaults(evaluation),
-                    )
-                    if was_created:
-                        created += 1
-                    else:
-                        updated += 1
-                if idx == 1 or idx % 50 == 0 or idx == len(fixtures):
-                    self.stdout.write(
-                        f"[v8-bootstrap] scored {idx}/{len(fixtures)} created={created} updated={updated}",
-                        ending="\n",
-                    )
+        for idx, fixture in enumerate(fixtures, start=1):
+            features = preloader.build(fixture)
+            result = engine.evaluate(fixture, features)
+            evaluated += 1
+            for evaluation in result.values():
+                evaluated_rows.append((fixture, evaluation))
+            if idx == 1 or idx % 50 == 0 or idx == len(fixtures):
+                self.stdout.write(
+                    f"[v8-bootstrap] evaluated {idx}/{len(fixtures)} in memory; pending_rows={len(evaluated_rows)}",
+                    ending="\n",
+                )
+
+        self.stdout.write(
+            f"[v8-bootstrap] bulk persistence start rows={len(evaluated_rows)} batch_size={PERSIST_BATCH_SIZE}",
+            ending="\n",
+        )
+        created, updated, unchanged = self._bulk_persist_evaluations(evaluated_rows)
+        self.stdout.write(
+            f"[v8-bootstrap] bulk persistence complete created={created} updated={updated} unchanged={unchanged}",
+            ending="\n",
+        )
 
         tier_a = Prediction.objects.filter(
             model_version=V8_MODEL_VERSION,
@@ -120,6 +176,7 @@ class Command(BaseCommand):
             "fixtures_evaluated": evaluated,
             "predictions_created": created,
             "predictions_updated": updated,
+            "predictions_unchanged": unchanged,
             "raw_tier_a": tier_a,
         }
         self.stdout.write(json.dumps(payload, ensure_ascii=False, default=str))
