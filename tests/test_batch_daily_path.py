@@ -1,12 +1,15 @@
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from engine.batch_features import BatchFeatureEngineeringService
 from engine.features import FeatureEngineeringService
 from engine.models import Fixture, Prediction, Team
 from scanner.ingestion import DataIngestionService
+from scanner.management.commands.scan_daily import Command as ScanDailyCommand
 from scanner.management.commands.score_v8 import Command as ScoreV8Command
 
 
@@ -125,3 +128,45 @@ class BatchDailyPathTests(TestCase):
         self.assertFalse(ScoreV8Command._prediction_changed(pred, defaults))
         pred.score = Decimal("82.12")
         self.assertTrue(ScoreV8Command._prediction_changed(pred, defaults))
+
+    def test_bootstrap_bulk_persistence_is_bounded_and_exact(self):
+        home = Team.objects.create(external_id="bulk-home", name="Bulk Home")
+        away = Team.objects.create(external_id="bulk-away", name="Bulk Away")
+        base = datetime(2026, 8, 16, 12, 0, tzinfo=dt_timezone.utc)
+        fixtures = [
+            Fixture.objects.create(
+                external_id=f"bulk-{i}", competition="Test League", kickoff=base + timedelta(minutes=i),
+                home_team=home, away_team=away, status="NS",
+            )
+            for i in range(40)
+        ]
+        btts = {
+            "market": "BTTS", "selection": "YES", "probability": 0.651234,
+            "fair_odds": 1.535, "market_odds": 1.82, "edge": 0.10123,
+            "expected_value": 0.1856, "score": 84.126, "tier": "TIER_A",
+            "reasons": {"v8_gates_passed": True},
+        }
+        over = {
+            "market": "OVER_2_5", "selection": "OVER", "probability": 0.691234,
+            "fair_odds": 1.447, "market_odds": 1.75, "edge": 0.11987,
+            "expected_value": 0.2091, "score": 86.334, "tier": "TIER_A",
+            "reasons": {"v8_gates_passed": True},
+        }
+        rows = [(fixture, evaluation) for fixture in fixtures for evaluation in (btts, over)]
+
+        with CaptureQueriesContext(connection) as captured:
+            created, updated, unchanged = ScanDailyCommand._bulk_persist_evaluations(rows)
+
+        self.assertEqual((created, updated, unchanged), (80, 0, 0))
+        self.assertEqual(Prediction.objects.count(), 80)
+        self.assertLessEqual(len(captured), 6)
+        sample = Prediction.objects.get(fixture=fixtures[0], market="OVER_2_5", selection="OVER")
+        self.assertEqual(sample.probability, Decimal("0.69123"))
+        self.assertEqual(sample.market_odds, Decimal("1.750"))
+        self.assertEqual(sample.expected_value, Decimal("0.20910"))
+        self.assertEqual(sample.score, Decimal("86.33"))
+
+        with CaptureQueriesContext(connection) as captured_again:
+            created, updated, unchanged = ScanDailyCommand._bulk_persist_evaluations(rows)
+        self.assertEqual((created, updated, unchanged), (0, 0, 80))
+        self.assertLessEqual(len(captured_again), 4)
