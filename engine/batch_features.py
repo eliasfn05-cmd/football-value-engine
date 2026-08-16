@@ -17,17 +17,15 @@ class BatchFeatureEngineeringService:
     """Bounded SQL preload for scoring a complete date against remote PostgreSQL.
 
     Interactive Premium generation has two distinct phases:
-    1) a high-recall bootstrap over the large daily card; and
+    1) a high-recall bootstrap over the requested kickoff block; and
     2) a full rescore of the small candidate pool.
 
-    Standings and lineup window queries are useful in phase 2 but can dominate
-    wall-clock time when the bootstrap contains hundreds/thousands of fixtures.
-    When PREMIUM_INTERACTIVE_FAST is enabled and the card is large, bootstrap
-    therefore loads only venue history + current odds. The shortlisted pool is
-    rescored later with the complete feature set because it is below the cutoff.
+    The interactive bootstrap is intentionally lightweight: it loads only venue
+    history + current odds. Standings and lineup window queries are deferred to
+    the shortlisted candidate rescore, where the complete feature set is restored
+    before Deep Analysis and final Premium admission. This changes execution cost,
+    not the final Premium gates/calibration/selection rules.
     """
-
-    INTERACTIVE_HEAVY_FEATURE_CUTOFF = 120
 
     def __init__(
         self,
@@ -54,7 +52,10 @@ class BatchFeatureEngineeringService:
         return os.getenv("PREMIUM_INTERACTIVE_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
 
     def _use_lightweight_bootstrap(self) -> bool:
-        return self._interactive_fast_enabled() and len(self.fixtures) > self.INTERACTIVE_HEAVY_FEATURE_CUTOFF
+        # Sprint 7.13 performance: every dashboard bootstrap is discovery-only.
+        # Full standings/lineups are restored during the candidate batch rescore,
+        # so paying for these remote window queries here duplicates expensive work.
+        return self._interactive_fast_enabled()
 
     def _phase(self, name: str, fn) -> None:
         started = time.perf_counter()
@@ -74,8 +75,8 @@ class BatchFeatureEngineeringService:
         self._phase("history", self._preload_history)
         if lightweight:
             self.progress(
-                "[features] SKIP standings/lineups for large interactive bootstrap; "
-                "candidate rescore will restore full features"
+                "[features] SKIP standings/lineups for interactive bootstrap; "
+                "candidate batch rescore restores full features"
             )
         else:
             self._phase("standings", self._preload_standings)
@@ -279,17 +280,13 @@ class BatchFeatureEngineeringService:
             away_over25_last5_away=away.over25_rate,
             home_btts_last5_home=home.btts_rate,
             away_btts_last5_away=away.btts_rate,
-            home_clean_sheet_rate=home.clean_sheet_rate,
-            away_clean_sheet_rate=away.clean_sheet_rate,
-            home_failed_to_score_rate=home.failed_to_score_rate,
-            away_failed_to_score_rate=away.failed_to_score_rate,
-            home_table_position=home_position,
-            away_table_position=away_position,
+            home_league_position=home_position,
+            away_league_position=away_position,
             home_points_per_game=home_ppg,
             away_points_per_game=away_ppg,
             home_lineup_continuity=home_lineup,
             away_lineup_continuity=away_lineup,
-            btts_market_odds=btts_odds,
-            over25_market_odds=over_odds,
+            btts_odds=btts_odds,
+            over25_odds=over_odds,
             data_quality_score=quality,
         )
