@@ -1,0 +1,44 @@
+name: premium-settlement-monitor
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: premium-settlement-monitor
+  cancel-in-progress: true
+
+jobs:
+  settle-premium-results:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONUNBUFFERED: "1"
+      SECRET_KEY: settlement-cli-only-key
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      APP_TIMEZONE: America/Lima
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -q -r requirements.txt
+      - name: Validate settlement secrets
+        run: |
+          test -n "$DATABASE_URL" || (echo "Missing RENDER_DATABASE_URL" && exit 1)
+          test -n "$API_FOOTBALL_KEY" || (echo "Missing API_FOOTBALL_KEY" && exit 1)
+      - name: Refresh final scores and settle Premium history
+        run: |
+          TODAY="$(TZ=America/Lima date +%F)"
+          YESTERDAY="$(TZ=America/Lima date -d 'yesterday' +%F)"
+          echo "Refreshing results for $TODAY and $YESTERDAY"
+          python manage.py ingest_daily --date "$TODAY" --fixtures-only
+          python manage.py ingest_daily --date "$YESTERDAY" --fixtures-only
+          python manage.py settle_predictions
+          python manage.py learning_report --premium-only
