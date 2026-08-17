@@ -20,7 +20,7 @@ class _CursorContext:
 
 
 class BatchFeaturePostgresFastPathTests(SimpleTestCase):
-    def test_history_fast_path_uses_one_lateral_query_and_one_bulk_fetch(self):
+    def test_history_fast_path_uses_one_query_without_secondary_fetch(self):
         kickoff = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
         requested = [
             SimpleNamespace(id=1, home_team_id=10, away_team_id=20, kickoff=kickoff),
@@ -28,12 +28,10 @@ class BatchFeaturePostgresFastPathTests(SimpleTestCase):
         ]
         service = BatchFeatureEngineeringService(requested, venue_sample_size=5)
 
-        hist_101 = SimpleNamespace(id=101, home_goals=2, away_goals=1)
-        hist_102 = SimpleNamespace(id=102, home_goals=1, away_goals=1)
         rows = [
-            (10, "home", 101, kickoff),
-            (10, "home", 102, kickoff),
-            (20, "away", 102, kickoff),
+            (10, "home", 101, 10, 99, 2, 1, kickoff),
+            (10, "home", 102, 10, 98, 1, 1, kickoff),
+            (20, "away", 102, 10, 20, 1, 1, kickoff),
         ]
         cursor_ctx = _CursorContext(rows)
 
@@ -42,14 +40,8 @@ class BatchFeaturePostgresFastPathTests(SimpleTestCase):
             ops=SimpleNamespace(quote_name=lambda name: f'"{name}"'),
             cursor=lambda: cursor_ctx,
         )
-        fake_manager = Mock()
-        fake_manager.only.return_value.in_bulk.return_value = {
-            101: hist_101,
-            102: hist_102,
-        }
         fake_fixture_model = SimpleNamespace(
             _meta=SimpleNamespace(db_table="engine_fixture"),
-            objects=fake_manager,
         )
 
         with patch("engine.batch_features.connection", fake_connection), patch(
@@ -63,6 +55,42 @@ class BatchFeaturePostgresFastPathTests(SimpleTestCase):
         self.assertIn("ORDER BY f.kickoff DESC", sql)
         self.assertEqual(params[2], 5)
         self.assertEqual(params[4], 5)
-        fake_manager.only.return_value.in_bulk.assert_called_once()
-        self.assertEqual(service._history[(10, "home")], [hist_101, hist_102])
-        self.assertEqual(service._history[(20, "away")], [hist_102])
+        self.assertEqual([row.id for row in service._history[(10, "home")]], [101, 102])
+        self.assertEqual(service._history[(10, "home")][0].home_goals, 2)
+        self.assertEqual(service._history[(20, "away")][0].away_goals, 1)
+
+    def test_odds_fast_path_uses_two_indexed_lateral_probes_per_fixture(self):
+        kickoff = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+        requested = [
+            SimpleNamespace(id=1, home_team_id=10, away_team_id=20, kickoff=kickoff),
+            SimpleNamespace(id=2, home_team_id=30, away_team_id=40, kickoff=kickoff),
+        ]
+        service = BatchFeatureEngineeringService(requested)
+        rows = [
+            (1, "BTTS", "YES", 1.82),
+            (1, "OVER_2_5", "OVER", 1.75),
+            (2, "OVER_2_5", "OVER", 1.91),
+        ]
+        cursor_ctx = _CursorContext(rows)
+        fake_connection = SimpleNamespace(
+            vendor="postgresql",
+            ops=SimpleNamespace(quote_name=lambda name: f'"{name}"'),
+            cursor=lambda: cursor_ctx,
+        )
+        fake_odds_model = SimpleNamespace(
+            _meta=SimpleNamespace(db_table="engine_oddssnapshot"),
+        )
+
+        with patch("engine.batch_features.connection", fake_connection), patch(
+            "engine.batch_features.OddsSnapshot", fake_odds_model
+        ):
+            service._preload_odds_postgres()
+
+        self.assertEqual(cursor_ctx.cursor.execute.call_count, 1)
+        sql, params = cursor_ctx.cursor.execute.call_args.args
+        self.assertEqual(sql.count("CROSS JOIN LATERAL"), 2)
+        self.assertIn("ORDER BY o.captured_at DESC", sql)
+        self.assertEqual(params, [[1, 2]])
+        self.assertEqual(service._odds[(1, "BTTS", "YES")], 1.82)
+        self.assertEqual(service._odds[(1, "OVER_2_5", "OVER")], 1.75)
+        self.assertEqual(service._odds[(2, "OVER_2_5", "OVER")], 1.91)
