@@ -59,23 +59,20 @@ class BatchFeatureEngineeringService:
         self._phase("odds", self._preload_odds)
 
     def _preload_history(self) -> None:
-        """Load the same last-N venue history with an index-friendly PostgreSQL plan.
-
-        The previous Window(RowNumber) query ranked every matching historical row
-        for every team in the batch. On the remote production PostgreSQL database
-        that becomes the dominant BOOTSTRAP_V8 cost as the history table grows.
-
-        PostgreSQL now performs one indexed LATERAL lookup per team/venue and stops
-        after ``venue_sample_size`` rows. The existing fixture_home_kick_idx and
-        fixture_away_kick_idx indexes make each lookup bounded. Other databases
-        keep the original ORM implementation for local development/tests.
-        """
+        """Load the same last-N venue history with an index-friendly PostgreSQL plan."""
         if connection.vendor == "postgresql":
             self._preload_history_postgres()
         else:
             self._preload_history_orm()
 
     def _preload_history_postgres(self) -> None:
+        """One bounded SQL call, with no second Fixture fetch.
+
+        The historical rows already contain every field used by ``_profile``.
+        Returning goals directly from each LATERAL lookup removes the previous
+        ``in_bulk`` round-trip and model hydration while preserving the exact
+        same last-N venue sample and ordering.
+        """
         if not self.team_ids or self.min_kickoff is None:
             return
 
@@ -85,10 +82,13 @@ class BatchFeatureEngineeringService:
             WITH teams(team_id) AS (
                 SELECT unnest(%s::bigint[])
             )
-            SELECT t.team_id, 'home' AS venue, h.id, h.kickoff
+            SELECT t.team_id, 'home' AS venue,
+                   h.id, h.home_team_id, h.away_team_id,
+                   h.home_goals, h.away_goals, h.kickoff
             FROM teams t
             CROSS JOIN LATERAL (
-                SELECT f.id, f.kickoff
+                SELECT f.id, f.home_team_id, f.away_team_id,
+                       f.home_goals, f.away_goals, f.kickoff
                 FROM {table} f
                 WHERE f.home_team_id = t.team_id
                   AND f.kickoff < %s
@@ -98,10 +98,13 @@ class BatchFeatureEngineeringService:
                 LIMIT %s
             ) h
             UNION ALL
-            SELECT t.team_id, 'away' AS venue, a.id, a.kickoff
+            SELECT t.team_id, 'away' AS venue,
+                   a.id, a.home_team_id, a.away_team_id,
+                   a.home_goals, a.away_goals, a.kickoff
             FROM teams t
             CROSS JOIN LATERAL (
-                SELECT f.id, f.kickoff
+                SELECT f.id, f.home_team_id, f.away_team_id,
+                       f.home_goals, f.away_goals, f.kickoff
                 FROM {table} f
                 WHERE f.away_team_id = t.team_id
                   AND f.kickoff < %s
@@ -110,7 +113,7 @@ class BatchFeatureEngineeringService:
                 ORDER BY f.kickoff DESC
                 LIMIT %s
             ) a
-            ORDER BY 1, 2, 4 DESC
+            ORDER BY 1, 2, 8 DESC
         """
         with connection.cursor() as cursor:
             cursor.execute(
@@ -125,19 +128,20 @@ class BatchFeatureEngineeringService:
             )
             rows = cursor.fetchall()
 
-        fixture_ids = {row[2] for row in rows}
-        fixtures_by_id = Fixture.objects.only(
-            "id",
-            "home_team_id",
-            "away_team_id",
-            "home_goals",
-            "away_goals",
-            "kickoff",
-        ).in_bulk(fixture_ids)
-        for team_id, venue, fixture_id, _kickoff in rows:
-            item = fixtures_by_id.get(fixture_id)
-            if item is not None:
-                self._history[(team_id, venue)].append(item)
+        # _profile only reads goals (plus ids/kickoff for compatibility), so a
+        # tiny in-memory object avoids a second DB query and full Django models.
+        from types import SimpleNamespace
+
+        for team_id, venue, fixture_id, home_team_id, away_team_id, home_goals, away_goals, kickoff in rows:
+            item = SimpleNamespace(
+                id=fixture_id,
+                home_team_id=home_team_id,
+                away_team_id=away_team_id,
+                home_goals=home_goals,
+                away_goals=away_goals,
+                kickoff=kickoff,
+            )
+            self._history[(team_id, venue)].append(item)
 
     def _preload_history_orm(self) -> None:
         base_filters = {"kickoff__lt": self.min_kickoff, "home_goals__isnull": False, "away_goals__isnull": False}
@@ -166,25 +170,71 @@ class BatchFeatureEngineeringService:
         for row in previous_qs.iterator(chunk_size=1000): self._previous_lineup_by_team[row.team_id] = row
 
     def _preload_odds(self) -> None:
+        if not self.fixture_ids:
+            return
+
+        if connection.vendor == "postgresql":
+            self._preload_odds_postgres()
+            return
+
         base = OddsSnapshot.objects.filter(fixture_id__in=self.fixture_ids).filter(
             Q(market="BTTS", selection="YES") | Q(market="OVER_2_5", selection="OVER")
         )
-        if connection.vendor == "postgresql":
-            # DISTINCT ON can stop at the newest indexed row for each requested
-            # fixture/market/selection instead of ranking every odds snapshot.
-            qs = base.order_by("fixture_id", "market", "selection", "-captured_at").distinct(
-                "fixture_id", "market", "selection"
+        qs = (base.annotate(
+            rn=Window(
+                expression=RowNumber(),
+                partition_by=[F("fixture_id"), F("market"), F("selection")],
+                order_by=F("captured_at").desc(),
             )
-        else:
-            qs = (base.annotate(
-                rn=Window(
-                    expression=RowNumber(),
-                    partition_by=[F("fixture_id"), F("market"), F("selection")],
-                    order_by=F("captured_at").desc(),
-                )
-            ).filter(rn=1))
+        ).filter(rn=1))
         for row in qs.iterator(chunk_size=1000):
             self._odds[(row.fixture_id, row.market, row.selection)] = float(row.decimal_odds)
+
+    def _preload_odds_postgres(self) -> None:
+        """Fetch only two latest odds rows per fixture through indexed lookups.
+
+        ``DISTINCT ON`` still has to visit/sort all matching snapshots for the
+        selected fixtures. During Premium bootstrap that can dominate runtime
+        when bookmakers refresh odds frequently. Two LATERAL probes per fixture
+        stop immediately at the newest indexed row and return only the values
+        V8 actually consumes. Selection is fixed by market in this system.
+        """
+        table = connection.ops.quote_name(OddsSnapshot._meta.db_table)
+        fixture_ids = sorted(self.fixture_ids)
+        sql = f"""
+            WITH fixtures(fixture_id) AS (
+                SELECT unnest(%s::bigint[])
+            )
+            SELECT f.fixture_id, 'BTTS' AS market, 'YES' AS selection, b.decimal_odds
+            FROM fixtures f
+            CROSS JOIN LATERAL (
+                SELECT o.decimal_odds
+                FROM {table} o
+                WHERE o.fixture_id = f.fixture_id
+                  AND o.market = 'BTTS'
+                  AND o.selection = 'YES'
+                ORDER BY o.captured_at DESC
+                LIMIT 1
+            ) b
+            UNION ALL
+            SELECT f.fixture_id, 'OVER_2_5' AS market, 'OVER' AS selection, o25.decimal_odds
+            FROM fixtures f
+            CROSS JOIN LATERAL (
+                SELECT o.decimal_odds
+                FROM {table} o
+                WHERE o.fixture_id = f.fixture_id
+                  AND o.market = 'OVER_2_5'
+                  AND o.selection = 'OVER'
+                ORDER BY o.captured_at DESC
+                LIMIT 1
+            ) o25
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(sql, [fixture_ids])
+            rows = cursor.fetchall()
+
+        for fixture_id, market, selection, decimal_odds in rows:
+            self._odds[(fixture_id, market, selection)] = float(decimal_odds)
 
     @staticmethod
     def _profile(fixtures: list[Fixture], venue: str) -> VenueProfile:
