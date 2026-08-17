@@ -17,11 +17,10 @@ def register_confirmed_win(apps, schema_editor):
         )
         .filter(
             target_date="2026-08-16",
-            model_version="score_v8",
             market="OVER_2_5",
             selection="OVER",
-            prediction__fixture__home_team__name__icontains="America",
-            prediction__fixture__away_team__name__icontains="Atletico San Luis",
+            prediction__fixture__home_team__name__icontains="Am",
+            prediction__fixture__away_team__name__icontains="San Luis",
         )
         .order_by("-published_at")
         .first()
