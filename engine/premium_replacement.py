@@ -133,6 +133,15 @@ class PremiumReplacementService:
         return True, "guarded_confidence_rescue"
 
     def _critical_consistency_risk(self, prediction: Prediction) -> tuple[bool, str]:
+        # RiskGuard must veto every Premium membership decision, including
+        # already-published rows restored from the immutable publication ledger.
+        # Previously it was enforced for new candidates (and rescue-score rows)
+        # but a standard-score publication could remain locked after the guard
+        # was tightened. That allowed rejected profiles to reappear on rerun.
+        risk = PremiumRiskGuard.evaluate(prediction)
+        if risk.blocked:
+            return True, f"risk_guard:{risk.code}:{risk.detail}"
+
         calibration = self.selector.calibrator.calibrate(prediction)
         gap = abs(calibration.raw_probability - calibration.calibrated_probability)
         if gap >= PREMIUM_MAX_MODEL_CALIBRATION_GAP:
