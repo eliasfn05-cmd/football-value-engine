@@ -15,12 +15,23 @@ class PremiumRiskDecision:
 
 class PremiumRiskGuard:
     RECENT_N = 5
+
+    # Sprint 7.10.1: Premium Over 2.5 must be both high-value and structurally
+    # stable. EV/edge alone can no longer promote a prediction whose model
+    # probability or longer venue sample is too weak. This is deliberately a
+    # generic gate: it protects against Veles-like profiles without blacklisting
+    # a team or fixture by name.
+    OVER25_MIN_MODEL_PROBABILITY = 0.65
+    OVER25_MIN_FULL_SAMPLE = 6
+    OVER25_MIN_FULL_SIDE = 0.50
+    OVER25_MIN_FULL_COMBINED = 0.60
     OVER25_MIN_RECENT_SIDE = 0.60
     OVER25_STRONG_ANCHOR_SIDE = 0.80
     OVER25_MIN_RECENT_COMBINED = 0.70
     OVER25_MIN_MARKET_SUPPORT = 0.65
     OVER25_MAX_RECENT_FTS_FOR_NIL_RISK = 0.40
     OVER25_STRONG_CLEAN_SHEET = 0.40
+
     BTTS_MIN_RECENT_SIDE = 0.50
     BTTS_MAX_RECENT_FTS = 0.40
     BTTS_STRONG_CLEAN_SHEET = 0.50
@@ -124,6 +135,53 @@ class PremiumRiskGuard:
             return PremiumRiskDecision(True, "venue_evidence_incomplete", f"home={home_n}/5 away={away_n}/5")
 
         if prediction.market == "OVER_2_5":
+            # Confidence floor: a Premium Over must be a high-probability event
+            # before odds/EV are considered. A large price cannot compensate for
+            # a fragile base probability.
+            try:
+                model_probability = float(prediction.probability or 0.0)
+            except (TypeError, ValueError):
+                model_probability = 0.0
+            if model_probability < cls.OVER25_MIN_MODEL_PROBABILITY:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_model_probability_floor",
+                    f"model probability {model_probability:.1%} < {cls.OVER25_MIN_MODEL_PROBABILITY:.0%}",
+                )
+
+            h_full = cls._float(evidence, "home_over25_rate")
+            a_full = cls._float(evidence, "away_over25_rate")
+            try:
+                h_full_n = int(evidence.get("home_sample") or 0)
+                a_full_n = int(evidence.get("away_sample") or 0)
+            except (TypeError, ValueError):
+                h_full_n = a_full_n = 0
+
+            if h_full_n < cls.OVER25_MIN_FULL_SAMPLE or a_full_n < cls.OVER25_MIN_FULL_SAMPLE:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_structural_sample_incomplete",
+                    f"full venue sample home={h_full_n} away={a_full_n}; need >= {cls.OVER25_MIN_FULL_SAMPLE} each",
+                )
+            if h_full is None or a_full is None:
+                return PremiumRiskDecision(True, "over25_structural_evidence_missing", "full venue Over2.5 rates missing")
+
+            weak_full = min(h_full, a_full)
+            combined_full = (h_full + a_full) / 2.0
+            if weak_full < cls.OVER25_MIN_FULL_SIDE:
+                weak_side = "home" if h_full <= a_full else "away"
+                return PremiumRiskDecision(
+                    True,
+                    "over25_structural_side_floor",
+                    f"{weak_side} full venue Over2.5 {weak_full:.0%} < {cls.OVER25_MIN_FULL_SIDE:.0%}",
+                )
+            if combined_full < cls.OVER25_MIN_FULL_COMBINED:
+                return PremiumRiskDecision(
+                    True,
+                    "over25_structural_combined_floor",
+                    f"full venue combined Over2.5 {combined_full:.0%} < {cls.OVER25_MIN_FULL_COMBINED:.0%}",
+                )
+
             h = cls._float(evidence, "home_recent_over25_rate")
             a = cls._float(evidence, "away_recent_over25_rate")
             hfts = cls._float(evidence, "home_recent_failed_to_score_rate", 0.0)
