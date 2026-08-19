@@ -22,15 +22,29 @@ class MarketConfidenceService:
     No external API calls are made here. Venue evidence comes from V8 features;
     H2H and competition tendencies are computed from finished official matches
     already stored in the database.
+
+    Performance note: OVER_2_5 and BTTS for the same fixture consume exactly the
+    same H2H/competition history. Cache that immutable evidence inside the service
+    so a V8 evaluation performs each database lookup once instead of once per
+    market. This changes no scoring or Premium rule.
     """
 
     min_confidence = 50.0
+
+    def __init__(self):
+        self._h2h_cache: dict[tuple[int, int], tuple[int, float, float]] = {}
+        self._competition_cache: dict[tuple[int, object, int], tuple[int, float, float]] = {}
 
     @staticmethod
     def _official(rows: list[Fixture]) -> list[Fixture]:
         return [row for row in rows if not classify_competition(row).excluded]
 
     def _h2h(self, fixture: Fixture, limit: int = 8) -> tuple[int, float, float]:
+        cache_key = (int(fixture.id), int(limit))
+        cached = self._h2h_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         rows = list(
             Fixture.objects.filter(kickoff__lt=fixture.kickoff)
             .filter(
@@ -43,18 +57,29 @@ class MarketConfidenceService:
         )
         rows = self._official(rows)[:limit]
         if not rows:
-            return 0, 0.50, 0.50
-        over = btts = 0
-        for row in rows:
-            hg, ag = int(row.home_goals or 0), int(row.away_goals or 0)
-            over += int(hg + ag >= 3)
-            btts += int(hg > 0 and ag > 0)
-        n = len(rows)
-        return n, over / n, btts / n
+            result = (0, 0.50, 0.50)
+        else:
+            over = btts = 0
+            for row in rows:
+                hg, ag = int(row.home_goals or 0), int(row.away_goals or 0)
+                over += int(hg + ag >= 3)
+                btts += int(hg > 0 and ag > 0)
+            n = len(rows)
+            result = (n, over / n, btts / n)
+        self._h2h_cache[cache_key] = result
+        return result
 
     def _competition(self, fixture: Fixture, limit: int = 80) -> tuple[int, float, float]:
         if fixture.competition_ref_id is None:
             return 0, 0.50, 0.50
+
+        # kickoff is deliberately part of the key: the original logic is
+        # time-relative and must remain bit-for-bit equivalent for each fixture.
+        cache_key = (int(fixture.competition_ref_id), fixture.kickoff, int(limit))
+        cached = self._competition_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         rows = list(
             Fixture.objects.filter(
                 competition_ref_id=fixture.competition_ref_id,
@@ -67,14 +92,17 @@ class MarketConfidenceService:
         )
         rows = self._official(rows)
         if not rows:
-            return 0, 0.50, 0.50
-        over = btts = 0
-        for row in rows:
-            hg, ag = int(row.home_goals or 0), int(row.away_goals or 0)
-            over += int(hg + ag >= 3)
-            btts += int(hg > 0 and ag > 0)
-        n = len(rows)
-        return n, over / n, btts / n
+            result = (0, 0.50, 0.50)
+        else:
+            over = btts = 0
+            for row in rows:
+                hg, ag = int(row.home_goals or 0), int(row.away_goals or 0)
+                over += int(hg + ag >= 3)
+                btts += int(hg > 0 and ag > 0)
+            n = len(rows)
+            result = (n, over / n, btts / n)
+        self._competition_cache[cache_key] = result
+        return result
 
     @staticmethod
     def _rate_score(rate: float, target: float = 0.65) -> float:
