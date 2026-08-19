@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from time import perf_counter
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import close_old_connections, transaction
 from django.utils import timezone
 
 from engine.batch_features import BatchFeatureEngineeringService
@@ -16,6 +18,9 @@ from scanner.models import PipelineStageRun, PremiumGenerationJob
 
 PERSIST_BATCH_SIZE = 500
 INTERACTIVE_RESCORE_LIMIT = 32
+DEFAULT_INTERACTIVE_WORKERS = 8
+MAX_RESCORE_WORKERS = 12
+_THREAD_LOCAL = threading.local()
 
 
 class Command(BaseCommand):
@@ -50,6 +55,37 @@ class Command(BaseCommand):
             progress_pct=max(23, min(39, int(progress_pct))),
             message=str(message)[:255],
         )
+
+    @staticmethod
+    def _worker_count(total: int, interactive: bool) -> int:
+        if total <= 1:
+            return 1
+        default = DEFAULT_INTERACTIVE_WORKERS if interactive else 4
+        try:
+            configured = int(os.getenv("PREMIUM_RESCORE_WORKERS", str(default)))
+        except ValueError:
+            configured = default
+        return max(1, min(total, configured, MAX_RESCORE_WORKERS))
+
+    @staticmethod
+    def _thread_engine() -> ScoreEngineV8:
+        engine = getattr(_THREAD_LOCAL, "score_engine", None)
+        if engine is None:
+            engine = ScoreEngineV8()
+            _THREAD_LOCAL.score_engine = engine
+        return engine
+
+    @classmethod
+    def _evaluate_one(cls, fixture: Fixture, features):
+        # Django connections are thread-local. Explicitly retire inherited/stale
+        # connections before/after each task so the worker pool is safe on GitHub
+        # Actions while allowing the DB-bound confidence lookups to overlap.
+        close_old_connections()
+        try:
+            result = cls._thread_engine().evaluate(fixture, features)
+            return fixture, result
+        finally:
+            close_old_connections()
 
     def _bulk_persist(self, evaluated_rows):
         if not evaluated_rows:
@@ -122,8 +158,9 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError("--date must use YYYY-MM-DD") from exc
 
+        interactive = self._interactive_fast_enabled()
         requested_limit = max(1, min(int(options.get("limit") or 40), 60))
-        limit = min(requested_limit, INTERACTIVE_RESCORE_LIMIT) if self._interactive_fast_enabled() else requested_limit
+        limit = min(requested_limit, INTERACTIVE_RESCORE_LIMIT) if interactive else requested_limit
         self._heartbeat(target_date, 24, f"RESCORE V8: preparando los mejores {limit} candidatos.")
 
         ordered_ids = self._parse_fixture_ids(options.get("fixture_ids"), limit)
@@ -162,20 +199,32 @@ class Command(BaseCommand):
         preload_started = perf_counter()
         preloader = BatchFeatureEngineeringService(fixtures, progress=lambda message: self.stdout.write(message))
         preloader.preload()
+        # Build FeatureVectors once in the main thread. Workers only execute the
+        # same ScoreEngineV8 logic concurrently; no Premium threshold is changed.
+        work_items = [(fixture, preloader.build(fixture)) for fixture in fixtures]
         preload_seconds = perf_counter() - preload_started
 
-        self._heartbeat(target_date, 31, f"RESCORE V8: estadísticas listas; evaluando {len(fixtures)} partidos.")
-        engine = ScoreEngineV8()
+        workers = self._worker_count(len(work_items), interactive)
+        self._heartbeat(target_date, 31, f"RESCORE V8: evaluando {len(work_items)} partidos en {workers} workers.")
+        self.stdout.write(f"[rescore_batch] parallel evaluation workers={workers}")
         evaluation_started = perf_counter()
         evaluated_rows = []
-        total = len(fixtures)
-        for index, fixture in enumerate(fixtures, 1):
-            result = engine.evaluate(fixture, preloader.build(fixture))
-            evaluated_rows.extend((fixture, evaluation) for evaluation in result.values())
-            if index == 1 or index % 5 == 0 or index == total:
-                pct = 31 + int((index / total) * 6)
-                self._heartbeat(target_date, pct, f"RESCORE V8: evaluados {index}/{total} partidos.")
-                self.stdout.write(f"[rescore_batch] evaluated {index}/{total}")
+        total = len(work_items)
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="v8-rescore") as executor:
+            futures = {
+                executor.submit(self._evaluate_one, fixture, features): fixture.id
+                for fixture, features in work_items
+            }
+            for future in as_completed(futures):
+                fixture, result = future.result()
+                evaluated_rows.extend((fixture, evaluation) for evaluation in result.values())
+                completed += 1
+                if completed == 1 or completed % 3 == 0 or completed == total:
+                    pct = 31 + int((completed / total) * 6)
+                    self._heartbeat(target_date, pct, f"RESCORE V8: evaluados {completed}/{total} partidos · {workers} workers.")
+                    self.stdout.write(f"[rescore_batch] evaluated {completed}/{total}")
         evaluation_seconds = perf_counter() - evaluation_started
 
         self._heartbeat(target_date, 38, "RESCORE V8: guardando resultados recalculados.")
@@ -186,5 +235,5 @@ class Command(BaseCommand):
         self._heartbeat(target_date, 39, f"RESCORE V8 completado en {total_seconds:.0f}s; continuando con Deep Analysis.")
         self.stdout.write(self.style.SUCCESS(
             f"[rescore_batch] complete: {len(fixtures)} fixtures; created={created}, updated={updated}; "
-            f"pool={pool_seconds:.2f}s preload={preload_seconds:.2f}s eval={evaluation_seconds:.2f}s "
-            f"db={persist_seconds:.2f}s total={total_seconds:.2f}s"))
+            f"workers={workers} pool={pool_seconds:.2f}s preload={preload_seconds:.2f}s "
+            f"eval={evaluation_seconds:.2f}s db={persist_seconds:.2f}s total={total_seconds:.2f}s"))
