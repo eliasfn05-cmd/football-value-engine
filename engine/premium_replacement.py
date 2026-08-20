@@ -22,15 +22,6 @@ NON_OPERATIONAL_FIXTURE_STATUSES = {
 PREMIUM_MAX_MODEL_CALIBRATION_GAP = 0.20
 PREMIUM_MIN_RAW_EV = -0.10
 
-# Sprint 7.13 - Elite Premium Value Gate.
-# A Premium slot is scarce and must carry a meaningful calibrated advantage,
-# not merely rank ahead of weaker candidates. These floors are intentionally
-# stricter than the generic selector so the card may contain 0, 1 or 2 picks
-# instead of filling a third slot with a marginal profile.
-PREMIUM_ELITE_MIN_CALIBRATED_EDGE = 0.12
-PREMIUM_ELITE_MIN_RELIABLE_EV = 0.18
-PREMIUM_ELITE_MAX_MODEL_CALIBRATION_GAP = 0.05
-
 # Sprint 7.12.5 - guarded confidence rescue.
 # 76 remains the normal selector floor, but it is no longer a universal veto.
 # A 68-75.9 candidate may remain/enter Premium B only when every confidence
@@ -58,9 +49,12 @@ class PremiumReplacementService:
     """Maintain up to three currently actionable Premium picks.
 
     Ordinary publication stability is preserved, while deterministic critical
-    contradictions still have veto authority. Sprint 7.13 also enforces an
-    elite calibrated-edge/EV gate on every slot, including already-published
-    rows. This means the system never fills a Premium position by obligation.
+    contradictions still have veto authority. Sprint 7.12.5 replaces the rigid
+    score>=76 publication veto with a guarded Premium-B rescue band: a score in
+    [68, 76) survives only with strong calibrated probability, edge, EV,
+    reliability, model/calibration agreement and a clean Sprint 7.11 venue
+    profile. This keeps strong picks such as a high-reliability 71-point profile
+    without reopening weak 67-point or contradictory candidates.
     """
 
     def __init__(self, *, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
@@ -141,6 +135,9 @@ class PremiumReplacementService:
     def _critical_consistency_risk(self, prediction: Prediction) -> tuple[bool, str]:
         # RiskGuard must veto every Premium membership decision, including
         # already-published rows restored from the immutable publication ledger.
+        # Previously it was enforced for new candidates (and rescue-score rows)
+        # but a standard-score publication could remain locked after the guard
+        # was tightened. That allowed rejected profiles to reappear on rerun.
         risk = PremiumRiskGuard.evaluate(prediction)
         if risk.blocked:
             return True, f"risk_guard:{risk.code}:{risk.detail}"
@@ -151,27 +148,6 @@ class PremiumReplacementService:
             return True, f"model_calibration_gap:{gap:.3f}"
         if calibration.raw_ev < PREMIUM_MIN_RAW_EV:
             return True, f"raw_ev:{calibration.raw_ev:.3f}"
-
-        # Sprint 7.13: hard Premium-quality gate. A candidate with a merely
-        # positive EV may remain a good Tier-B observation, but it cannot occupy
-        # one of the three official Premium slots unless its calibrated edge and
-        # reliability-adjusted EV are both materially strong. This is generic;
-        # no team or fixture is blacklisted by name.
-        if calibration.calibrated_edge < PREMIUM_ELITE_MIN_CALIBRATED_EDGE:
-            return True, (
-                f"elite_calibrated_edge:{calibration.calibrated_edge:.3f}"
-                f"<{PREMIUM_ELITE_MIN_CALIBRATED_EDGE:.3f}"
-            )
-        if calibration.reliable_ev < PREMIUM_ELITE_MIN_RELIABLE_EV:
-            return True, (
-                f"elite_reliable_ev:{calibration.reliable_ev:.3f}"
-                f"<{PREMIUM_ELITE_MIN_RELIABLE_EV:.3f}"
-            )
-        if gap > PREMIUM_ELITE_MAX_MODEL_CALIBRATION_GAP:
-            return True, (
-                f"elite_model_calibration_gap:{gap:.3f}"
-                f">{PREMIUM_ELITE_MAX_MODEL_CALIBRATION_GAP:.3f}"
-            )
 
         rescue_ok, rescue_detail = self._score_rescue_eligible(prediction)
         if not rescue_ok:
@@ -237,9 +213,9 @@ class PremiumReplacementService:
             if self.selector._unique_fixture_count(ranked) >= self.max_picks:
                 break
 
-        # If the normal selector cannot fill the card, consider only tightly
-        # constrained confidence-rescue profiles. Sprint 7.13 still applies the
-        # elite gate afterwards, so this path can never force a weak third pick.
+        # If the normal >=76 selector cannot fill the card, consider only the
+        # tightly constrained 68-75.9 confidence-rescue profiles. This does not
+        # weaken the standard pool and never forces three picks.
         if self.selector._unique_fixture_count(ranked) < self.max_picks:
             existing_ids = {item[0].id for item in ranked}
             for prediction in candidates:
@@ -396,13 +372,6 @@ class PremiumReplacementService:
             risk = PremiumRiskGuard.evaluate(prediction)
             critical, critical_reason = self._critical_consistency_risk(prediction)
             rescue_ok, rescue_detail = self._score_rescue_eligible(prediction)
-            rationale["sprint_7_13_elite_gate"] = {
-                "blocked": critical,
-                "detail": critical_reason,
-                "min_calibrated_edge": PREMIUM_ELITE_MIN_CALIBRATED_EDGE,
-                "min_reliable_ev": PREMIUM_ELITE_MIN_RELIABLE_EV,
-                "max_model_calibration_gap": PREMIUM_ELITE_MAX_MODEL_CALIBRATION_GAP,
-            }
             rationale["sprint_7_12_5_consistency_guard"] = {
                 "blocked": critical,
                 "detail": critical_reason,
@@ -446,7 +415,8 @@ class PremiumReplacementService:
 
         # Reorder the surviving set by CURRENT quality, not stale publication
         # rank. Publication lock stabilizes membership; current rank only orders
-        # the cards.
+        # the cards. This fixes cases where a weaker Tier-B card was shown above
+        # a stronger one after replacement/reconciliation.
         tier_priority = {"A": 2, "B": 1}
         rows.sort(
             key=lambda row: (
