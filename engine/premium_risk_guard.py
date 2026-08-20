@@ -21,6 +21,19 @@ class PremiumRiskGuard:
     OVER25_MIN_MARKET_SUPPORT = 0.65
     OVER25_MAX_RECENT_FTS_FOR_NIL_RISK = 0.40
     OVER25_STRONG_CLEAN_SHEET = 0.40
+
+    # Sprint 7.13 - generic post-loss regression guards.
+    # These are deliberately profile-based (not team/date vetoes). They target
+    # two recurring false-positive paths for O2.5: a side arriving in a real
+    # scoring drought, and a matchup where one defence is suppressing opponents
+    # strongly enough that a 1-0/2-0 ceiling becomes material.
+    OVER25_CURRENT_ATTACK_MIN_AVG_GF = 0.80
+    OVER25_CURRENT_ATTACK_MAX_FTS = 0.40
+    OVER25_DROUGHT_RESCUE_OTHER_AVG_GF = 2.40
+    OVER25_DEFENSIVE_SUPPRESSION_CS = 0.60
+    OVER25_DEFENSIVE_SUPPRESSION_OPP_GF = 1.80
+    OVER25_DEFENSIVE_SUPPRESSION_MAX_COMBINED_AVG_TOTAL = 2.80
+
     BTTS_MIN_RECENT_SIDE = 0.50
     BTTS_MAX_RECENT_FTS = 0.40
     BTTS_STRONG_CLEAN_SHEET = 0.50
@@ -34,10 +47,6 @@ class PremiumRiskGuard:
         ("leagues cup", 2026, "club américa", "austin fc"): ("austin fc", "club américa"),
     }
 
-    # Verified audit vetoes are explicit, traceable exceptions created after a
-    # manual/deep audit finds a material contradiction that is not yet encoded
-    # by the generic feature set. They are market-specific and date-specific so
-    # they cannot silently blacklist a team in future fixtures.
     VERIFIED_AUDIT_VETOES = {
         ("2026-08-14", "reims", "dunkerque", "OVER_2_5"):
             "external/form audit contradicted the model's 67% Over 2.5 estimate; hold out of Premium",
@@ -87,20 +96,45 @@ class PremiumRiskGuard:
         return None
 
     @classmethod
-    def _current_attack_profile(cls, team: Team, before_fixture: Fixture) -> dict | None:
+    def _current_team_profile(cls, team: Team, before_fixture: Fixture) -> dict | None:
         fixtures = (Fixture.objects.filter(kickoff__lt=before_fixture.kickoff, home_goals__isnull=False, away_goals__isnull=False)
                     .filter(Q(home_team=team) | Q(away_team=team))
                     .select_related("home_team", "away_team", "competition_ref").order_by("-kickoff"))
         goals_for = []
+        goals_against = []
         for fixture in fixtures.iterator(chunk_size=50):
             if classify_competition(fixture).excluded:
                 continue
-            goals_for.append(int(fixture.home_goals or 0) if fixture.home_team_id == team.id else int(fixture.away_goals or 0))
+            if fixture.home_team_id == team.id:
+                gf, ga = int(fixture.home_goals or 0), int(fixture.away_goals or 0)
+            else:
+                gf, ga = int(fixture.away_goals or 0), int(fixture.home_goals or 0)
+            goals_for.append(gf)
+            goals_against.append(ga)
             if len(goals_for) >= cls.RECENT_N:
                 break
         if len(goals_for) < cls.RECENT_N:
             return None
-        return {"n": len(goals_for), "avg_goals_for": sum(goals_for) / len(goals_for), "failed_to_score_rate": sum(v == 0 for v in goals_for) / len(goals_for)}
+        n = len(goals_for)
+        return {
+            "n": n,
+            "avg_goals_for": sum(goals_for) / n,
+            "avg_goals_against": sum(goals_against) / n,
+            "avg_total_goals": sum(gf + ga for gf, ga in zip(goals_for, goals_against)) / n,
+            "failed_to_score_rate": sum(v == 0 for v in goals_for) / n,
+            "clean_sheet_rate": sum(v == 0 for v in goals_against) / n,
+        }
+
+    @classmethod
+    def _current_attack_profile(cls, team: Team, before_fixture: Fixture) -> dict | None:
+        profile = cls._current_team_profile(team, before_fixture)
+        if profile is None:
+            return None
+        return {
+            "n": profile["n"],
+            "avg_goals_for": profile["avg_goals_for"],
+            "failed_to_score_rate": profile["failed_to_score_rate"],
+        }
 
     @classmethod
     def evaluate(cls, prediction: Prediction) -> PremiumRiskDecision:
@@ -147,6 +181,48 @@ class PremiumRiskGuard:
                 return PremiumRiskDecision(True, "over25_nil_risk_home", f"home FTS {hfts:.0%} + away CS {acs:.0%}")
             if afts >= 0.40 and hcs >= 0.40:
                 return PremiumRiskDecision(True, "over25_nil_risk_away", f"away FTS {afts:.0%} + home CS {hcs:.0%}")
+
+            if fixture is not None:
+                home_profile = cls._current_team_profile(fixture.home_team, fixture)
+                away_profile = cls._current_team_profile(fixture.away_team, fixture)
+                if home_profile and away_profile:
+                    profiles = (("home", home_profile, away_profile), ("away", away_profile, home_profile))
+                    for side, profile, other in profiles:
+                        drought = (
+                            profile["avg_goals_for"] < cls.OVER25_CURRENT_ATTACK_MIN_AVG_GF
+                            or profile["failed_to_score_rate"] >= cls.OVER25_CURRENT_ATTACK_MAX_FTS
+                        )
+                        if drought and other["avg_goals_for"] < cls.OVER25_DROUGHT_RESCUE_OTHER_AVG_GF:
+                            return PremiumRiskDecision(
+                                True,
+                                f"over25_{side}_current_attack_drought",
+                                f"{side} avgGF={profile['avg_goals_for']:.2f}, FTS={profile['failed_to_score_rate']:.0%}; "
+                                f"other avgGF={other['avg_goals_for']:.2f}<2.40",
+                            )
+
+                    combined_avg_total = (home_profile["avg_total_goals"] + away_profile["avg_total_goals"]) / 2.0
+                    if (
+                        home_profile["clean_sheet_rate"] >= cls.OVER25_DEFENSIVE_SUPPRESSION_CS
+                        and away_profile["avg_goals_for"] < cls.OVER25_DEFENSIVE_SUPPRESSION_OPP_GF
+                        and combined_avg_total <= cls.OVER25_DEFENSIVE_SUPPRESSION_MAX_COMBINED_AVG_TOTAL
+                    ):
+                        return PremiumRiskDecision(
+                            True,
+                            "over25_home_defensive_suppression",
+                            f"home CS={home_profile['clean_sheet_rate']:.0%}, away avgGF={away_profile['avg_goals_for']:.2f}, "
+                            f"combined avgTotal={combined_avg_total:.2f}",
+                        )
+                    if (
+                        away_profile["clean_sheet_rate"] >= cls.OVER25_DEFENSIVE_SUPPRESSION_CS
+                        and home_profile["avg_goals_for"] < cls.OVER25_DEFENSIVE_SUPPRESSION_OPP_GF
+                        and combined_avg_total <= cls.OVER25_DEFENSIVE_SUPPRESSION_MAX_COMBINED_AVG_TOTAL
+                    ):
+                        return PremiumRiskDecision(
+                            True,
+                            "over25_away_defensive_suppression",
+                            f"away CS={away_profile['clean_sheet_rate']:.0%}, home avgGF={home_profile['avg_goals_for']:.2f}, "
+                            f"combined avgTotal={combined_avg_total:.2f}",
+                        )
             return PremiumRiskDecision(False)
 
         if prediction.market == "BTTS":
