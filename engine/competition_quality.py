@@ -60,6 +60,18 @@ LOWER_LEAGUE_TERMS = (
     "primera b metropolitana", "primera c", "primera d",
 )
 
+# Hard country blacklist for Premium eligibility. Country-level exclusion is
+# intentionally preferred over individual league names so every Estonian
+# domestic competition (including Esiliiga B) is rejected automatically.
+BLOCKED_COUNTRIES = (
+    "estonia",
+)
+
+ESTONIA_COMPETITION_TERMS = (
+    "premium liiga", "meistriliiga", "esiliiga", "esiliiga a", "esiliiga b",
+    "estonian cup", "estonia cup", "super cup",
+)
+
 
 def _normalize(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
@@ -116,6 +128,20 @@ def classify_competition(fixture: Fixture) -> CompetitionQuality:
     external_id = competition.external_id if competition else ""
     home_name = getattr(getattr(fixture, "home_team", None), "name", "") or ""
     away_name = getattr(getattr(fixture, "away_team", None), "name", "") or ""
+
+    normalized_country = _normalize(country)
+    normalized_competition_identity = _normalize(f"{fixture_name} {ref_name}")
+
+    # Country blacklist is evaluated before every quality/official override.
+    # This guarantees that Estonia cannot enter Premium regardless of score,
+    # model probability, EV, reliability or league naming.
+    if normalized_country in {_normalize(value) for value in BLOCKED_COUNTRIES}:
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "blocked_country_estonia")
+
+    # Defensive fallback for provider rows whose country metadata is absent or
+    # malformed but whose domestic competition name clearly identifies Estonia.
+    if _contains_any(normalized_competition_identity, ESTONIA_COMPETITION_TERMS):
+        return CompetitionQuality(4, "TIER_4_EXCLUDED", 0.0, True, "blocked_estonia_competition")
 
     # Team identity is a hard exclusion and is evaluated before any official
     # league-name override. Provider metadata can call a competition simply
