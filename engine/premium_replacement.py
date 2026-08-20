@@ -9,9 +9,10 @@ from django.utils import timezone
 from .competition_quality import classify_competition
 from .models import DailyPremiumSelection, Prediction, PremiumPublicationLedger
 from .premium_risk_guard import PremiumRiskGuard
-from .premium_selection import DYNAMIC_SCORE_FLOORS, DailyPremiumSelector
+from .premium_selection import DYNAMIC_SCORE_FLOORS, PREMIUM_MARKET, DailyPremiumSelector
 from .score_v8 import V8_MODEL_VERSION
 from .value_policy import PREMIUM_MIN_EV
+
 
 NON_OPERATIONAL_FIXTURE_STATUSES = {
     "1h", "ht", "2h", "et", "bt", "p", "live",
@@ -22,11 +23,6 @@ NON_OPERATIONAL_FIXTURE_STATUSES = {
 
 PREMIUM_MAX_MODEL_CALIBRATION_GAP = 0.20
 PREMIUM_MIN_RAW_EV = -0.10
-
-# Sprint 7.12.5 - guarded confidence rescue.
-# 76 remains the normal selector floor, but it is no longer a universal veto.
-# A 68-75.9 candidate may remain/enter Premium B only when every confidence
-# signal is unusually strong and the venue-specific risk guard is clean.
 PREMIUM_STANDARD_MIN_SCORE = min(DYNAMIC_SCORE_FLOORS)
 PREMIUM_HARD_MIN_SCORE = 68.0
 PREMIUM_RESCUE_MIN_CALIBRATED_PROBABILITY = 0.64
@@ -47,15 +43,11 @@ def fixture_is_operational(fixture) -> bool:
 
 
 class PremiumReplacementService:
-    """Maintain up to three currently actionable Premium picks.
+    """Maintain up to three operational BTTS-YES Premium picks.
 
-    Ordinary publication stability is preserved, while deterministic critical
-    contradictions still have veto authority. Sprint 7.12.5 replaces the rigid
-    score>=76 publication veto with a guarded Premium-B rescue band: a score in
-    [68, 76) survives only with strong calibrated probability, edge, EV,
-    reliability, model/calibration agreement and a clean Sprint 7.11 venue
-    profile. This keeps strong picks such as a high-reliability 71-point profile
-    without reopening weak 67-point or contradictory candidates.
+    Publication stability remains, but only inside the single operational market.
+    Legacy OVER_2_5 publications stay in the historical ledger and are excluded
+    from the active card on the next reconciliation.
     """
 
     def __init__(self, *, model_version: str = V8_MODEL_VERSION, max_picks: int = 3):
@@ -88,9 +80,19 @@ class PremiumReplacementService:
             "premium_tier": row.premium_tier,
             "premium_rank_score": float(row.premium_rank_score),
             "rationale": row.rationale or {},
+            "operational_market": PREMIUM_MARKET,
         }
 
     def _score_rescue_eligible(self, prediction: Prediction) -> tuple[bool, str]:
+        if prediction.market != PREMIUM_MARKET:
+            return False, "market_excluded:btts_only"
+
+        # Risk guard is ALWAYS authoritative, even for a high score. This avoids
+        # publication-lock bypasses and makes single-market policy deterministic.
+        risk = PremiumRiskGuard.evaluate(prediction)
+        if risk.blocked:
+            return False, f"risk_guard:{risk.code}:{risk.detail}"
+
         score = float(prediction.score or 0.0)
         if score >= PREMIUM_STANDARD_MIN_SCORE:
             return True, "standard_score_floor"
@@ -99,7 +101,6 @@ class PremiumReplacementService:
 
         calibration = self.selector.calibrator.calibrate(prediction)
         gap = abs(calibration.raw_probability - calibration.calibrated_probability)
-        risk = PremiumRiskGuard.evaluate(prediction)
         failures = []
         if calibration.calibrated_probability < PREMIUM_RESCUE_MIN_CALIBRATED_PROBABILITY:
             failures.append(
@@ -126,17 +127,21 @@ class PremiumReplacementService:
                 f"model_calibration_gap:{gap:.3f}"
                 f">{PREMIUM_RESCUE_MAX_MODEL_CALIBRATION_GAP:.3f}"
             )
-        if risk.blocked:
-            failures.append(f"risk_guard:{risk.code}:{risk.detail}")
-
         if failures:
             return False, ";".join(failures)
         return True, "guarded_confidence_rescue"
 
     def _critical_consistency_risk(self, prediction: Prediction) -> tuple[bool, str]:
+        if prediction.market != PREMIUM_MARKET:
+            return True, "market_excluded:btts_only"
+
         quality = classify_competition(prediction.fixture)
         if quality.excluded:
             return True, f"competition_excluded:{quality.reason}"
+
+        risk = PremiumRiskGuard.evaluate(prediction)
+        if risk.blocked:
+            return True, f"risk_guard:{risk.code}:{risk.detail}"
 
         calibration = self.selector.calibrator.calibrate(prediction)
         gap = abs(calibration.raw_probability - calibration.calibrated_probability)
@@ -147,14 +152,14 @@ class PremiumReplacementService:
 
         rescue_ok, rescue_detail = self._score_rescue_eligible(prediction)
         if not rescue_ok:
-            current_score = float(prediction.score or 0.0)
-            return True, (
-                f"score_quality_gate:{current_score:.1f};{rescue_detail}"
-            )
+            return True, f"score_quality_gate:{float(prediction.score or 0.0):.1f};{rescue_detail}"
         return False, ""
 
     @staticmethod
     def _publication_critical_risk(publication: PremiumPublicationLedger) -> tuple[bool, str]:
+        # Legacy markets can remain in history, but never in the active card.
+        if publication.prediction.market != PREMIUM_MARKET:
+            return True, "publication_market_excluded:btts_only"
         snapshot = publication.snapshot or {}
         try:
             raw_probability = float(snapshot.get("raw_probability"))
@@ -174,9 +179,9 @@ class PremiumReplacementService:
 
     def _publication_or_current_critical_risk(self, publication: PremiumPublicationLedger) -> tuple[bool, str]:
         snapshot_blocked, snapshot_reason = self._publication_critical_risk(publication)
-        current_blocked, current_reason = self._critical_consistency_risk(publication.prediction)
         if snapshot_blocked:
             return True, snapshot_reason
+        current_blocked, current_reason = self._critical_consistency_risk(publication.prediction)
         if current_blocked:
             return True, f"current_{current_reason}"
         return False, ""
@@ -189,6 +194,7 @@ class PremiumReplacementService:
                 "fixture", "fixture__home_team", "fixture__away_team", "fixture__competition_ref",
             ).filter(
                 model_version=self.model_version,
+                market=PREMIUM_MARKET,
                 fixture__kickoff__gte=future_start,
                 fixture__kickoff__lt=end,
                 market_odds__gte=Decimal("1.60"),
@@ -209,9 +215,6 @@ class PremiumReplacementService:
             if self.selector._unique_fixture_count(ranked) >= self.max_picks:
                 break
 
-        # If the normal >=76 selector cannot fill the card, consider only the
-        # tightly constrained 68-75.9 confidence-rescue profiles. This does not
-        # weaken the standard pool and never forces three picks.
         if self.selector._unique_fixture_count(ranked) < self.max_picks:
             existing_ids = {item[0].id for item in ranked}
             for prediction in candidates:
@@ -222,12 +225,8 @@ class PremiumReplacementService:
                     continue
                 if not self.selector._passes_hard_value_floors(prediction):
                     continue
-                if PremiumRiskGuard.evaluate(prediction).blocked:
-                    continue
                 rescue_ok, rescue_detail = self._score_rescue_eligible(prediction)
-                if not rescue_ok:
-                    continue
-                if self._critical_consistency_risk(prediction)[0]:
+                if not rescue_ok or self._critical_consistency_risk(prediction)[0]:
                     continue
                 rank_score, rationale = self.selector._rank_score(prediction)
                 rationale = dict(rationale or {})
@@ -252,7 +251,6 @@ class PremiumReplacementService:
                 ),
                 reverse=True,
             )
-
         return ranked, selected_floor
 
     def _locked_publications(self, target_date: date) -> list[PremiumPublicationLedger]:
@@ -260,9 +258,11 @@ class PremiumReplacementService:
             PremiumPublicationLedger.objects.select_related(
                 "prediction", "prediction__fixture", "prediction__fixture__home_team",
                 "prediction__fixture__away_team", "prediction__fixture__competition_ref",
-            )
-            .filter(target_date=target_date, model_version=self.model_version)
-            .order_by("published_rank", "id")
+            ).filter(
+                target_date=target_date,
+                model_version=self.model_version,
+                market=PREMIUM_MARKET,
+            ).order_by("published_rank", "id")
         )
         locked: list[PremiumPublicationLedger] = []
         seen_fixtures: set[int] = set()
@@ -283,78 +283,66 @@ class PremiumReplacementService:
     def reconcile(self, target_date: date, *, trigger: str = "scheduled_reconcile") -> list[DailyPremiumSelection]:
         previous = list(
             DailyPremiumSelection.objects.select_related(
-                "prediction", "prediction__fixture", "prediction__fixture__home_team",
-                "prediction__fixture__away_team",
-            )
-            .filter(target_date=target_date, model_version=self.model_version)
-            .order_by("rank")
+                "prediction", "prediction__fixture", "prediction__fixture__home_team", "prediction__fixture__away_team",
+            ).filter(target_date=target_date, model_version=self.model_version).order_by("rank")
         )
         previous_ids = {row.prediction_id for row in previous}
 
+        # Include every historical market here only to report removals; active
+        # locks below are BTTS-only.
         all_publications = list(
             PremiumPublicationLedger.objects.select_related(
                 "prediction", "prediction__fixture", "prediction__fixture__home_team",
                 "prediction__fixture__away_team", "prediction__fixture__competition_ref",
-            )
-            .filter(target_date=target_date, model_version=self.model_version)
-            .order_by("published_rank", "id")
+            ).filter(target_date=target_date, model_version=self.model_version).order_by("published_rank", "id")
         )
         locked_publications = self._locked_publications(target_date)
         locked_prediction_ids = {row.prediction_id for row in locked_publications}
         locked_fixture_ids = {row.prediction.fixture_id for row in locked_publications}
 
-        removed_publications = []
         removed_labels = []
         for row in all_publications:
             unavailable = not fixture_is_operational(row.prediction.fixture)
             critical, critical_reason = self._publication_or_current_critical_risk(row)
             if unavailable or critical:
-                removed_publications.append(row)
                 label = f"{row.prediction.fixture.home_team.name} vs {row.prediction.fixture.away_team.name}"
                 if critical:
                     label += f" [{critical_reason}]"
                 removed_labels.append(label)
 
         ranked, selected_floor = self._rank_operational_candidates(target_date)
-
         chosen_new = []
         seen_fixtures = set(locked_fixture_ids)
         slots_left = max(0, self.max_picks - len(locked_publications))
-        if slots_left:
-            for item in ranked:
-                prediction = item[0]
-                if prediction.id in locked_prediction_ids or prediction.fixture_id in seen_fixtures:
-                    continue
-                chosen_new.append(item)
-                seen_fixtures.add(prediction.fixture_id)
-                if len(chosen_new) >= slots_left:
-                    break
+        for item in ranked:
+            if len(chosen_new) >= slots_left:
+                break
+            prediction = item[0]
+            if prediction.id in locked_prediction_ids or prediction.fixture_id in seen_fixtures:
+                continue
+            chosen_new.append(item)
+            seen_fixtures.add(prediction.fixture_id)
 
         DailyPremiumSelection.objects.filter(target_date=target_date, model_version=self.model_version).delete()
 
         rows: list[DailyPremiumSelection] = []
         for publication in locked_publications:
+            prediction = publication.prediction
+            if prediction.market != PREMIUM_MARKET:
+                continue
             snapshot = publication.snapshot or {}
             rationale = dict(snapshot.get("rationale") or {})
-            rescue_ok, rescue_detail = self._score_rescue_eligible(publication.prediction)
+            rationale["operational_market"] = PREMIUM_MARKET
             rationale["publication_lock"] = {
                 "locked": True,
                 "source": "PremiumPublicationLedger",
                 "published_rank": publication.published_rank,
-                "policy": "stable_unless_fixture_non_operational_or_critical_consistency_veto",
+                "policy": "BTTS-only; stable unless non-operational or critical veto",
             }
-            if float(publication.prediction.score or 0.0) < PREMIUM_STANDARD_MIN_SCORE:
-                rationale["premium_score_rescue"] = {
-                    "enabled": rescue_ok,
-                    "detail": rescue_detail,
-                    "score": float(publication.prediction.score or 0.0),
-                    "hard_min_score": PREMIUM_HARD_MIN_SCORE,
-                    "standard_min_score": PREMIUM_STANDARD_MIN_SCORE,
-                }
-            current_rank_score, _ = self.selector._rank_score(publication.prediction)
+            current_rank_score, _ = self.selector._rank_score(prediction)
             rows.append(DailyPremiumSelection(
                 target_date=target_date,
-                prediction=publication.prediction,
+                prediction=prediction,
                 rank=len(rows) + 1,
                 premium_tier=publication.premium_tier,
                 premium_rank_score=Decimal(f"{current_rank_score:.2f}"),
@@ -364,38 +352,23 @@ class PremiumReplacementService:
 
         for prediction, tier, rank_score, rationale in chosen_new:
             rationale = dict(rationale or {})
+            rationale["operational_market"] = PREMIUM_MARKET
             rationale["selector_dynamic_floor_used"] = selected_floor
-            risk = PremiumRiskGuard.evaluate(prediction)
-            critical, critical_reason = self._critical_consistency_risk(prediction)
-            rescue_ok, rescue_detail = self._score_rescue_eligible(prediction)
-            rationale["sprint_7_12_5_consistency_guard"] = {
-                "blocked": critical,
-                "detail": critical_reason,
-                "max_model_calibration_gap": PREMIUM_MAX_MODEL_CALIBRATION_GAP,
-                "min_raw_ev": PREMIUM_MIN_RAW_EV,
-                "hard_min_score": PREMIUM_HARD_MIN_SCORE,
-                "standard_min_score": PREMIUM_STANDARD_MIN_SCORE,
-                "score_rescue_eligible": rescue_ok,
-                "score_rescue_detail": rescue_detail,
-            }
-            rationale["sprint_7_11_risk_guard"] = {
-                "blocked": risk.blocked, "code": risk.code, "detail": risk.detail,
-            }
             rationale["publication_lock"] = {
                 "locked": True,
                 "source": "PremiumPublicationLedger",
-                "policy": "stable_unless_fixture_non_operational_or_critical_consistency_veto",
+                "policy": "BTTS-only; stable unless non-operational or critical veto",
             }
-            if removed_publications:
+            if removed_labels:
                 rationale.update({
-                    "promotion_reason": "PROMOTED_AFTER_PREMIUM_REMOVAL_OR_CRITICAL_VETO",
+                    "promotion_reason": "PROMOTED_AFTER_MARKET_OR_RISK_REMOVAL",
                     "promotion_trigger": trigger,
                     "replaced_premium": removed_labels,
                     "promoted_at": timezone.now().isoformat(),
                 })
             elif previous_ids:
                 rationale.update({
-                    "promotion_reason": "FILLED_AVAILABLE_PREMIUM_SLOT",
+                    "promotion_reason": "FILLED_AVAILABLE_BTTS_PREMIUM_SLOT",
                     "promotion_trigger": trigger,
                     "promoted_at": timezone.now().isoformat(),
                 })
@@ -409,10 +382,6 @@ class PremiumReplacementService:
                 rationale=rationale,
             ))
 
-        # Reorder the surviving set by CURRENT quality, not stale publication
-        # rank. Publication lock stabilizes membership; current rank only orders
-        # the cards. This fixes cases where a weaker Tier-B card was shown above
-        # a stronger one after replacement/reconciliation.
         tier_priority = {"A": 2, "B": 1}
         rows.sort(
             key=lambda row: (
@@ -425,7 +394,6 @@ class PremiumReplacementService:
         )
         for index, row in enumerate(rows, start=1):
             row.rank = index
-
         if rows:
             DailyPremiumSelection.objects.bulk_create(rows)
 
@@ -433,9 +401,11 @@ class PremiumReplacementService:
             DailyPremiumSelection.objects.select_related(
                 "prediction", "prediction__fixture", "prediction__fixture__home_team",
                 "prediction__fixture__away_team", "prediction__fixture__competition_ref",
-            )
-            .filter(target_date=target_date, model_version=self.model_version)
-            .order_by("rank")
+            ).filter(
+                target_date=target_date,
+                model_version=self.model_version,
+                prediction__market=PREMIUM_MARKET,
+            ).order_by("rank")
         )
 
         for row in persisted:
