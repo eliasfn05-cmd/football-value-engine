@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from django.db.models import Q
 
+from .btts_h2h_guard import h2h_metrics
 from .competition_quality import classify_competition
 from .models import Fixture, Prediction, Team
 
@@ -16,42 +17,38 @@ class PremiumRiskDecision:
 
 
 class PremiumRiskGuard:
-    """Professional Premium guard for the single operational market: BTTS YES.
-
-    Over 2.5 statistics may still exist in deep-analysis evidence and can be used
-    as secondary goal-environment context, but they never make a selection
-    eligible by themselves and OVER_2_5 can no longer pass this guard.
-    """
+    """Professional Premium guard for the single operational market: BTTS YES."""
 
     OPERATIONAL_MARKET = "BTTS"
     RECENT_N = 5
 
-    # Core BTTS venue gates. Both sides must contribute; one strong side cannot
-    # rescue a weak/non-scoring side.
     BTTS_MIN_RECENT_SIDE = 0.60
     BTTS_MIN_LONG_SIDE = 0.50
     BTTS_MIN_RECENT_COMBINED = 0.60
     BTTS_MAX_RECENT_FTS = 0.40
     BTTS_STRONG_CLEAN_SHEET = 0.50
 
-    # Current attack health, inherited from the useful part of the old O2.5
-    # drought guard. For BTTS there is deliberately no 'other team rescues it'
-    # exception: both teams must score.
     BTTS_CURRENT_ATTACK_MIN_AVG_GF = 0.90
     BTTS_CURRENT_ATTACK_MAX_FTS = 0.40
 
-    # Defensive suppression, inherited from the useful part of the old O2.5
-    # guard. A defence with repeated clean sheets facing a modest attack is a
-    # direct BTTS danger even when historic BTTS percentages look attractive.
     BTTS_DEFENSIVE_SUPPRESSION_CS = 0.60
     BTTS_DEFENSIVE_SUPPRESSION_OPP_GF = 1.40
     BTTS_DEFENSIVE_SUPPRESSION_MAX_OPP_CONCEDED = 1.20
 
-    # Over-derived metrics are retained only as a secondary environment veto in
-    # extreme low-event cases. A 1-1 is a BTTS win, therefore there is no normal
-    # Over 2.5 minimum requirement.
     BTTS_LOW_EVENT_MAX_COMBINED_AVG_TOTAL = 2.00
     BTTS_LOW_EVENT_MAX_RECENT_OVER25 = 0.40
+
+    # H2H evidence is now authoritative at the risk-guard layer, therefore it
+    # applies to fresh candidates, rescue candidates and publication locks.
+    # We do not hard-require five H2Hs for every match, but if fewer than three
+    # are stored the pick must be exceptionally strong to remain Premium.
+    BTTS_H2H_MIN_EVIDENCE = 3
+    BTTS_H2H_ELITE_OVERRIDE_CALIBRATED_PROB = 0.74
+    BTTS_H2H_ELITE_OVERRIDE_RELIABILITY = 0.93
+    BTTS_H2H_ELITE_OVERRIDE_RECENT_SIDE = 0.80
+    BTTS_H2H_ELITE_OVERRIDE_LONG_SIDE = 0.60
+    BTTS_H2H_ELITE_OVERRIDE_MAX_FTS = 0.20
+    BTTS_H2H_HARD_RATE = 0.40
 
     VERIFIED_ROLE_OVERRIDES = {
         ("leagues cup", 2026, "club america", "austin"): ("austin", "club america"),
@@ -60,8 +57,6 @@ class PremiumRiskGuard:
         ("leagues cup", 2026, "club américa", "austin fc"): ("austin fc", "club américa"),
     }
 
-    # Keep only market-relevant audit vetoes going forward. Historical O2.5
-    # vetoes remain in git history but have no place in the BTTS-only engine.
     VERIFIED_AUDIT_VETOES: dict[tuple[str, str, str, str], str] = {}
 
     @staticmethod
@@ -151,9 +146,71 @@ class PremiumRiskGuard:
         }
 
     @classmethod
+    def _h2h_risk(
+        cls,
+        prediction: Prediction,
+        *,
+        h_recent: float,
+        a_recent: float,
+        h_long: float,
+        a_long: float,
+        h_fts: float,
+        a_fts: float,
+    ) -> PremiumRiskDecision | None:
+        metrics = h2h_metrics(prediction)
+        sample = int(metrics.get("sample") or 0)
+        rate = float(metrics.get("btts_rate") or 0.0) if sample else None
+        recent3_all_no = bool(metrics.get("recent3_all_no"))
+
+        # Strong stored contradiction: this is a hard veto. The threshold is
+        # deliberately stricter than a soft ranking penalty because Premium is
+        # our highest-confidence publication layer.
+        if sample >= 5 and rate is not None and rate <= cls.BTTS_H2H_HARD_RATE and recent3_all_no:
+            return PremiumRiskDecision(
+                True,
+                "btts_h2h_hard_contradiction",
+                f"H2H n={sample}, BTTS={rate:.0%}, last3=NO",
+            )
+
+        if sample in {3, 4} and rate is not None and rate <= (1.0 / 3.0) and recent3_all_no:
+            return PremiumRiskDecision(
+                True,
+                "btts_h2h_recent_contradiction",
+                f"H2H n={sample}, BTTS={rate:.0%}, last3=NO",
+            )
+
+        if sample >= cls.BTTS_H2H_MIN_EVIDENCE:
+            return None
+
+        # If our own database does not contain enough H2H to verify the market,
+        # do not silently assume neutral 50%. Only an elite, independently strong
+        # BTTS profile may override missing H2H evidence.
+        calibration = None
+        try:
+            from .probability_calibration import ProbabilityEVCalibrationService
+            calibration = ProbabilityEVCalibrationService().calibrate(prediction)
+        except Exception:
+            calibration = None
+
+        calibrated_probability = float(getattr(calibration, "calibrated_probability", 0.0) or 0.0)
+        reliability = float(getattr(calibration, "reliability", 0.0) or 0.0)
+        elite_override = (
+            calibrated_probability >= cls.BTTS_H2H_ELITE_OVERRIDE_CALIBRATED_PROB
+            and reliability >= cls.BTTS_H2H_ELITE_OVERRIDE_RELIABILITY
+            and min(h_recent, a_recent) >= cls.BTTS_H2H_ELITE_OVERRIDE_RECENT_SIDE
+            and min(h_long, a_long) >= cls.BTTS_H2H_ELITE_OVERRIDE_LONG_SIDE
+            and max(h_fts, a_fts) <= cls.BTTS_H2H_ELITE_OVERRIDE_MAX_FTS
+        )
+        if not elite_override:
+            return PremiumRiskDecision(
+                True,
+                "btts_h2h_evidence_incomplete",
+                f"stored H2H={sample}<3; elite override requires p_cal>=74%, rel>=93%, recent BTTS>=80% both",
+            )
+        return None
+
+    @classmethod
     def evaluate(cls, prediction: Prediction) -> PremiumRiskDecision:
-        # Single-market policy: this is the first and strongest gate. It also
-        # invalidates legacy O2.5 publication locks on regeneration.
         if str(getattr(prediction, "market", "") or "").strip().upper() != cls.OPERATIONAL_MARKET:
             return PremiumRiskDecision(True, "btts_only_market", "Premium operates BTTS YES only")
 
@@ -209,6 +266,18 @@ class PremiumRiskGuard:
             return PremiumRiskDecision(True, "btts_nil_risk_away", f"away FTS {a_fts:.0%} + home CS {h_cs:.0%}")
 
         if fixture is not None:
+            h2h_risk = cls._h2h_risk(
+                prediction,
+                h_recent=h_recent,
+                a_recent=a_recent,
+                h_long=h_long,
+                a_long=a_long,
+                h_fts=h_fts,
+                a_fts=a_fts,
+            )
+            if h2h_risk:
+                return h2h_risk
+
             home = cls._current_team_profile(fixture.home_team, fixture)
             away = cls._current_team_profile(fixture.away_team, fixture)
             if home and away:
@@ -247,8 +316,6 @@ class PremiumRiskGuard:
                         f"away CS={away['clean_sheet_rate']:.0%}, home avgGF={home['avg_goals_for']:.2f}",
                     )
 
-                # Over-derived information is only a secondary sanity check for
-                # extremely low-event environments; it never creates a BTTS pick.
                 combined_total = (home["avg_total_goals"] + away["avg_total_goals"]) / 2.0
                 combined_over = (home["over25_rate"] + away["over25_rate"]) / 2.0
                 if (
