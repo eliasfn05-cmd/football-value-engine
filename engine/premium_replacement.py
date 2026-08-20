@@ -6,6 +6,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
+from .competition_quality import classify_competition
 from .models import DailyPremiumSelection, Prediction, PremiumPublicationLedger
 from .premium_risk_guard import PremiumRiskGuard
 from .premium_selection import DYNAMIC_SCORE_FLOORS, DailyPremiumSelector
@@ -133,6 +134,10 @@ class PremiumReplacementService:
         return True, "guarded_confidence_rescue"
 
     def _critical_consistency_risk(self, prediction: Prediction) -> tuple[bool, str]:
+        quality = classify_competition(prediction.fixture)
+        if quality.excluded:
+            return True, f"competition_excluded:{quality.reason}"
+
         calibration = self.selector.calibrator.calibrate(prediction)
         gap = abs(calibration.raw_probability - calibration.calibrated_probability)
         if gap >= PREMIUM_MAX_MODEL_CALIBRATION_GAP:
@@ -289,7 +294,7 @@ class PremiumReplacementService:
         all_publications = list(
             PremiumPublicationLedger.objects.select_related(
                 "prediction", "prediction__fixture", "prediction__fixture__home_team",
-                "prediction__fixture__away_team",
+                "prediction__fixture__away_team", "prediction__fixture__competition_ref",
             )
             .filter(target_date=target_date, model_version=self.model_version)
             .order_by("published_rank", "id")
