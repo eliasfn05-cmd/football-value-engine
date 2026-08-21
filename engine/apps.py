@@ -12,9 +12,11 @@ class EngineConfig(AppConfig):
         from .btts_v21_policy import install_btts_v21_policy
         from .btts_v22_policy import install_btts_v22_policy
         from .btts_v23_policy import install_btts_v23_policy
+        from .btts_v24_policy import install_btts_v24_policy
 
         install_h2h_guard()
         install_btts_v2_policy()
         install_btts_v21_policy()
         install_btts_v22_policy()
         install_btts_v23_policy()
+        install_btts_v24_policy()
