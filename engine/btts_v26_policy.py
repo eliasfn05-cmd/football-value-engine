@@ -6,21 +6,21 @@ V2.5 reacted to a 0/3 day by turning several correlated signals into hard
 vetoes. In production this could collapse a large fixture slate to zero picks.
 V2.6 keeps the anti-zero fundamentals as hard gates (both teams must actually
 score with adequate frequency in the exact venue role and recent overall form),
-but stops treating missing H2H and a 3/5 bilateral-BTTS streak as mandatory.
+but stops treating missing H2H and repeated BTTS-rate checks as mandatory.
 
 The important distinction is data absence vs. negative evidence:
 * missing/short H2H is neutral;
 * a sufficiently large H2H sample with repeated BTTS-NO remains a veto;
 * recent scoring ability remains mandatory;
-* BTTS participation remains in the consensus/ranking signal, with a modest
-  minimum, instead of requiring 3/5 for both teams independently.
+* BTTS participation remains in consensus/ranking, not in several duplicate
+  hard gates that all measure essentially the same outcome.
 """
 
 V26_MIN_OVERALL_SCORE_RATE = 0.55
 V26_MIN_OVERALL_LAST5_SCORED = 3
 V26_MIN_CALIBRATED_PROB = 0.56
 V26_MIN_CONSENSUS_PROB = 0.53
-V26_MIN_EMPIRICAL_BTTS = 0.42
+V26_MIN_EMPIRICAL_BTTS = 0.40
 
 
 def _anti_zero_decision_v26(prediction):
@@ -69,40 +69,44 @@ def _anti_zero_decision_v26(prediction):
             return PremiumRiskDecision(True, f"{side}_v26_overall_recent_blanks", f"{side} overall scored {overall['last5_scored']}/5")
 
     if metrics["calibrated_probability"] < V26_MIN_CALIBRATED_PROB:
-        return PremiumRiskDecision(
-            True,
-            "v26_calibrated_probability_floor",
-            f"calibrated BTTS={metrics['calibrated_probability']:.1%}<56%",
-        )
+        return PremiumRiskDecision(True, "v26_calibrated_probability_floor", f"calibrated BTTS={metrics['calibrated_probability']:.1%}<56%")
     if metrics["consensus_probability"] < V26_MIN_CONSENSUS_PROB:
-        return PremiumRiskDecision(
-            True,
-            "v26_consensus_probability_floor",
-            f"consensus BTTS={metrics['consensus_probability']:.1%}<53%",
-        )
+        return PremiumRiskDecision(True, "v26_consensus_probability_floor", f"consensus BTTS={metrics['consensus_probability']:.1%}<53%")
     if metrics["empirical_btts"] < V26_MIN_EMPIRICAL_BTTS:
-        return PremiumRiskDecision(
-            True,
-            "v26_empirical_btts_floor",
-            f"empirical BTTS={metrics['empirical_btts']:.1%}<42%",
-        )
+        return PremiumRiskDecision(True, "v26_empirical_btts_floor", f"empirical BTTS={metrics['empirical_btts']:.1%}<40%")
     return None
 
 
 def install_btts_v26_policy() -> None:
     """Install the production V2.6 rebalance after V2.1-V2.5 are loaded."""
-    from . import btts_v25_policy
+    from . import btts_v25_policy, btts_v24_policy, btts_v23_policy, premium_selection
     from .premium_risk_guard import PremiumRiskGuard
     from .btts_h2h_guard import h2h_metrics
 
     if getattr(PremiumRiskGuard, "_btts_v26_installed", False):
         return
 
-    # 1) Rebalance V2.5 hard vetoes while retaining its anti-zero metrics.
+    # 1) Keep V2.5 anti-zero checks, but use the V2.6 bilateral consensus gate.
     btts_v25_policy.anti_zero_decision = _anti_zero_decision_v26
 
-    # 2) Missing H2H is missing data, not negative BTTS evidence. Keep the
-    # original hard contradiction logic whenever at least three H2Hs exist.
+    # 2) Remove duplicated BTTS-rate veto stacking. Exact-role ability to SCORE
+    # remains strict through V2.4/V2.5 (score rate, avgGF, FTS, median, last5,
+    # zero-risk). BTTS outcome rates become corroborating evidence instead of
+    # requiring 3/5 repeatedly in multiple layers.
+    PremiumRiskGuard.BTTS_MIN_RECENT_SIDE = 0.40
+    PremiumRiskGuard.BTTS_MIN_LONG_SIDE = 0.35
+    PremiumRiskGuard.BTTS_MIN_RECENT_COMBINED = 0.45
+    btts_v24_policy.BTTS_V24_MIN_ROLE_BTTS = 0.25
+
+    # 3) Reliability 0.85 was being charged twice (selector + publication) and
+    # again after venue/model disagreement penalties. A calibrated 0.82 remains
+    # a strong Premium floor while preventing a whole-day recall collapse.
+    PremiumRiskGuard.BTTS_H2H_ELITE_OVERRIDE_RELIABILITY = 0.90
+    premium_selection.BTTS_MIN_EFFECTIVE_RELIABILITY = 0.82
+    btts_v23_policy.BTTS_V23_MIN_EFFECTIVE_RELIABILITY = 0.82
+
+    # 4) Missing H2H is missing data, not negative BTTS evidence. Keep hard
+    # contradiction logic whenever at least three H2Hs actually exist.
     original_h2h_risk = PremiumRiskGuard._h2h_risk.__func__
 
     def h2h_risk_v26(
