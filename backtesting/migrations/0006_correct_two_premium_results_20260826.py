@@ -52,7 +52,7 @@ def _find_ledger(Ledger, item):
 def correct_two_premium_results(apps, schema_editor):
     Ledger = apps.get_model("engine", "PremiumPublicationLedger")
     Outcome = apps.get_model("backtesting", "PredictionOutcome")
-    Fixture = apps.get_model("scanner", "Fixture")
+    Fixture = apps.get_model("engine", "Fixture")
 
     for item in CORRECTIONS:
         ledger = _find_ledger(Ledger, item)
