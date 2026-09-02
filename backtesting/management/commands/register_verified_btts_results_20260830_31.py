@@ -1,3 +1,9 @@
+from __future__ import annotations
+
+import re
+import unicodedata
+from difflib import SequenceMatcher
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -17,37 +23,89 @@ VERIFIED = [
 ]
 
 
+def _norm(value: str) -> str:
+    value = unicodedata.normalize("NFKD", value or "")
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.lower().replace("ø", "o").replace("ł", "l")
+    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _sim(a: str, b: str) -> float:
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    if na in nb or nb in na:
+        return 0.95
+    return SequenceMatcher(None, na, nb).ratio()
+
+
+def _find_fixture(day: str, home: str, away: str):
+    fixtures = list(
+        Fixture.objects.select_related("home_team", "away_team")
+        .filter(kickoff__date=day)
+        .order_by("kickoff")
+    )
+    if not fixtures:
+        return None, 0.0
+
+    scored = []
+    for fixture in fixtures:
+        hs = _sim(home, fixture.home_team.name)
+        aw = _sim(away, fixture.away_team.name)
+        pair = (hs + aw) / 2.0
+        scored.append((pair, min(hs, aw), fixture))
+
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    pair, weakest, fixture = scored[0]
+    if pair >= 0.72 and weakest >= 0.55:
+        return fixture, pair
+    return None, pair
+
+
 class Command(BaseCommand):
-    help = "Register user-verified BTTS top-3 results for 2026-08-30/31 in fixture history when matching fixtures exist."
+    help = (
+        "Register user-verified BTTS top-3 results for 2026-08-30/31. "
+        "Uses tolerant same-day team matching and never fabricates predictions/ledger rows."
+    )
 
     @transaction.atomic
     def handle(self, *args, **options):
         self.stdout.write("VERIFIED BTTS TOP-3 RESULTS | 2026-08-30/31")
         found = updated = missing = 0
+
         for day, home, away, hg, ag, state, rank in VERIFIED:
-            qs = Fixture.objects.filter(
-                kickoff__date=day,
-                home_team__name__iexact=home,
-                away_team__name__iexact=away,
-            ).order_by("-kickoff")
-            fixture = qs.first()
+            fixture, match_score = _find_fixture(day, home, away)
             if fixture is None:
                 missing += 1
-                self.stdout.write(f"MISSING | {rank} | {day} | {home} vs {away} | {hg}-{ag} | {state}")
+                self.stdout.write(
+                    f"MISSING | {rank} | {day} | {home} vs {away} | {hg}-{ag} | {state} | best_match={match_score:.2f}"
+                )
                 continue
+
             found += 1
-            changed = fixture.home_score != hg or fixture.away_score != ag
+            changed = fixture.home_goals != hg or fixture.away_goals != ag
             if changed:
-                fixture.home_score = hg
-                fixture.away_score = ag
-                fixture.save(update_fields=["home_score", "away_score"])
+                fixture.home_goals = hg
+                fixture.away_goals = ag
+                fixture.save(update_fields=["home_goals", "away_goals"])
                 updated += 1
-            has_btts_prediction = Prediction.objects.filter(fixture=fixture, market__iexact="BTTS").exists()
+
+            has_btts_prediction = Prediction.objects.filter(
+                fixture=fixture,
+                market__iexact="BTTS",
+            ).exists()
             source = "PREDICTION" if has_btts_prediction else "NO_BTTS_PREDICTION"
             self.stdout.write(
-                f"{'UPDATED' if changed else 'OK'} | {rank} | {day} | {home} vs {away} | {hg}-{ag} | {state} | {source}"
+                f"{'UPDATED' if changed else 'OK'} | {rank} | {day} | "
+                f"{fixture.home_team.name} vs {fixture.away_team.name} | {hg}-{ag} | {state} | "
+                f"{source} | match={match_score:.2f}"
             )
-        self.stdout.write(self.style.SUCCESS(
-            f"SUMMARY | supplied={len(VERIFIED)} found={found} updated={updated} missing={missing}. "
-            "Scores are user-verified; command does not fabricate Prediction/Premium ledger rows."
-        ))
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"SUMMARY | supplied={len(VERIFIED)} found={found} updated={updated} missing={missing}. "
+                "Scores are user-verified; no Prediction/PremiumPublicationLedger rows are fabricated."
+            )
+        )
