@@ -12,7 +12,7 @@ permissions:
 jobs:
   register-and-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     env:
       PYTHONUNBUFFERED: "1"
       SECRET_KEY: btts-v298-audit-cli-key
@@ -28,35 +28,22 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -q -r requirements.txt
-      - name: Run registration and audit and persist evidence
+      - name: Register Sep 2 BTTS results and persist evidence
         shell: bash
         run: |
           mkdir -p docs/audits
-          OUT=docs/audits/btts_v298_db_audit_limit100.txt
+          OUT=docs/audits/btts_20260902_db_registration.txt
           : > "$OUT"
           echo "RUN_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$OUT"
-          if [ -z "$DATABASE_URL" ]; then
-            echo "ERROR: Missing RENDER_DATABASE_URL" | tee -a "$OUT"
-            REG_RC=90
-            AUDIT_RC=90
-          else
-            set +e
-            echo "=== REGISTER VERIFIED BTTS RESULTS 2026-09-02 ===" | tee -a "$OUT"
-            python manage.py register_verified_btts_results_20260902 2>&1 | tee -a "$OUT"
-            REG_RC=${PIPESTATUS[0]}
-            echo "REGISTER_EXIT=$REG_RC" | tee -a "$OUT"
-            echo "=== AUDIT V2.9.1 vs V2.9.3 vs V2.9.8 | LIMIT 100 ===" | tee -a "$OUT"
-            python manage.py btts_v291_v293_v298_ranking_audit --limit 100 --top 3 --windows 4 2>&1 | tee -a "$OUT"
-            AUDIT_RC=${PIPESTATUS[0]}
-            echo "AUDIT_EXIT=$AUDIT_RC" | tee -a "$OUT"
-            set -e
-          fi
+          set +e
+          python manage.py register_verified_btts_results_20260902 2>&1 | tee -a "$OUT"
+          REG_RC=${PIPESTATUS[0]}
+          echo "REGISTER_EXIT=$REG_RC" | tee -a "$OUT"
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$OUT"
-          git commit -m "chore(audit): persist V2.9.8 DB audit limit100" || true
+          git commit -m "chore(audit): persist Sep 2 BTTS DB registration" || true
           git pull --rebase origin main || true
           git push
-          if [ "$REG_RC" -ne 0 ] || [ "$AUDIT_RC" -ne 0 ]; then
-            exit 1
-          fi
+          if [ "$REG_RC" -ne 0 ]; then exit 1; fi
