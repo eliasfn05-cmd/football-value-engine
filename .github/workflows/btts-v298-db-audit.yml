@@ -6,6 +6,9 @@ on:
       - '.github/workflows/btts-v298-db-audit.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   register-and-audit:
     runs-on: ubuntu-latest
@@ -25,9 +28,34 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -q -r requirements.txt
-      - name: Validate database secret
-        run: test -n "$DATABASE_URL" || (echo "Missing RENDER_DATABASE_URL" && exit 1)
-      - name: Register verified BTTS results 2026-09-02
-        run: python manage.py register_verified_btts_results_20260902
-      - name: Audit V2.9.1 vs V2.9.3 vs V2.9.8
-        run: python manage.py btts_v291_v293_v298_ranking_audit --top 3 --windows 4
+      - name: Run registration and audit and persist evidence
+        shell: bash
+        run: |
+          mkdir -p docs/audits
+          OUT=docs/audits/btts_v298_db_audit_latest.txt
+          : > "$OUT"
+          echo "RUN_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$OUT"
+          if [ -z "$DATABASE_URL" ]; then
+            echo "ERROR: Missing RENDER_DATABASE_URL" | tee -a "$OUT"
+            REG_RC=90
+            AUDIT_RC=90
+          else
+            set +e
+            echo "=== REGISTER VERIFIED BTTS RESULTS 2026-09-02 ===" | tee -a "$OUT"
+            python manage.py register_verified_btts_results_20260902 2>&1 | tee -a "$OUT"
+            REG_RC=${PIPESTATUS[0]}
+            echo "REGISTER_EXIT=$REG_RC" | tee -a "$OUT"
+            echo "=== AUDIT V2.9.1 vs V2.9.3 vs V2.9.8 ===" | tee -a "$OUT"
+            python manage.py btts_v291_v293_v298_ranking_audit --top 3 --windows 4 2>&1 | tee -a "$OUT"
+            AUDIT_RC=${PIPESTATUS[0]}
+            echo "AUDIT_EXIT=$AUDIT_RC" | tee -a "$OUT"
+            set -e
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$OUT"
+          git commit -m "chore(audit): persist V2.9.8 database audit result" || true
+          git push
+          if [ "$REG_RC" -ne 0 ] || [ "$AUDIT_RC" -ne 0 ]; then
+            exit 1
+          fi
