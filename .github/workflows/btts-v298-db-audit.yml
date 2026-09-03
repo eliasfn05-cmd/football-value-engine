@@ -44,3 +44,5 @@ jobs:
           git commit -m "chore(audit): persist V2.9.9 one-sided DB evidence" || true
           git pull --rebase origin main || true
           git push
+
+# rerun-registration-v2
