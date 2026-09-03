@@ -1,0 +1,31 @@
+RUN_UTC=2026-09-03T05:58:24Z
+=== REGISTER VERIFIED BTTS RESULTS 2026-09-02 ===
+VERIFIED BTTS TOP-3 RESULTS | 2026-09-02
+OK | A#1 | 2026-09-02 | Yokohama F. Marinos vs Kyoto Sanga | 1-1 | WIN | - | PREDICTION | match=0.78
+OK | A#2 | 2026-09-02 | FC Thun vs Lausanne | 0-0 | LOSS | ZERO_ZERO | PREDICTION | match=1.00
+OK | A#3 | 2026-09-02 | Motherwell vs Dundee Utd | 3-0 | LOSS | ONE_SIDED | PREDICTION | match=0.93
+SUMMARY | supplied=3 found=3 updated=0 missing=0 wins=1 losses=2 hit=0.3333 zero_zero=1 one_sided=1. Scores are user-verified; no Prediction/PremiumPublicationLedger rows are fabricated.
+REGISTER_EXIT=0
+=== AUDIT V2.9.1 vs V2.9.3 vs V2.9.8 | LIMIT 100 ===
+BTTS V2.9.1 vs V2.9.3 vs V2.9.8 RANKING AUDIT | days=1 top=3 unique_fixtures=100 blocked=99 unavailable=0
+READ ONLY | same V2.9.1 Tier A eligibility universe | newest completed prediction per fixture | no production gate/ranking changed.
+V2.9.8 hypothesis: keep V2.9.3 bilateral strength ranking, penalize weak recent scoring/BTTS continuity, failed-to-score exposure, tiny same-season role samples and tiny-sample short-rest interaction.
+
+OVERALL
+V2.9.1   n=  1 W=  1 L=  0 hit=1.0000 roi=+0.5300 0-0= 0 one= 0 avgRank=100.00
+V2.9.3   n=  1 W=  1 L=  0 hit=1.0000 roi=+0.5300 0-0= 0 one= 0 avgRank=69.03
+V2.9.8   n=  1 W=  1 L=  0 hit=1.0000 roi=+0.5300 0-0= 0 one= 0 avgRank=69.03
+
+TEMPORAL WINDOWS
+WINDOW 1 | 2026-09-02 -> 2026-09-02
+  V2.9.1   n=  1 W=  1 L=  0 hit=1.0000 roi=+0.5300 0-0= 0 one= 0 avgRank=100.00
+  V2.9.3   n=  1 W=  1 L=  0 hit=1.0000 roi=+0.5300 0-0= 0 one= 0 avgRank=69.03
+  V2.9.8   n=  1 W=  1 L=  0 hit=1.0000 roi=+0.5300 0-0= 0 one= 0 avgRank=69.03
+
+PROMOTION CHECK
+PASS requires: hit > V2.9.1, ROI > V2.9.1, 0-0 <= baseline, one-sided <= baseline, and >=75% temporal windows non-worse on hit+ROI.
+V2.9.3   FAIL dHit=+0.0000 dROI=+0.0000 d0-0=+0 dOne=+0 stable=1/1
+V2.9.8   FAIL dHit=+0.0000 dROI=+0.0000 d0-0=+0 dOne=+0 stable=1/1
+
+DECISION: V2.9.8 remains audit-only unless it clears the promotion check on the enlarged historical sample. Do not promote from the Yokohama/Thun/Motherwell block alone.
+AUDIT_EXIT=0
