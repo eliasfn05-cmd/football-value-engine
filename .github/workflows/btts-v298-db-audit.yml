@@ -1,0 +1,33 @@
+name: btts-v298-db-audit
+
+on:
+  push:
+    paths:
+      - '.github/workflows/btts-v298-db-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  register-and-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: "1"
+      SECRET_KEY: btts-v298-audit-cli-key
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+      APP_TIMEZONE: America/Lima
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -q -r requirements.txt
+      - name: Validate database secret
+        run: test -n "$DATABASE_URL" || (echo "Missing RENDER_DATABASE_URL" && exit 1)
+      - name: Register verified BTTS results 2026-09-02
+        run: python manage.py register_verified_btts_results_20260902
+      - name: Audit V2.9.1 vs V2.9.3 vs V2.9.8
+        run: python manage.py btts_v291_v293_v298_ranking_audit --top 3 --windows 4
