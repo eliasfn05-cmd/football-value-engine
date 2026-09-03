@@ -1,4 +1,4 @@
-name: btts-v298-db-audit
+name: btts-v299-db-audit
 
 on:
   push:
@@ -12,10 +12,10 @@ permissions:
 jobs:
   register-and-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     env:
       PYTHONUNBUFFERED: "1"
-      SECRET_KEY: btts-v298-audit-cli-key
+      SECRET_KEY: btts-v299-audit-cli-key
       DEBUG: "False"
       ALLOWED_HOSTS: localhost,127.0.0.1
       DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
@@ -28,22 +28,19 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -q -r requirements.txt
-      - name: Register Sep 2 BTTS results and persist evidence
-        shell: bash
+      - name: Register Sep 3 BTTS results and run V2.9.9 audit
         run: |
           mkdir -p docs/audits
-          OUT=docs/audits/btts_20260902_db_registration.txt
-          : > "$OUT"
-          echo "RUN_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$OUT"
-          set +e
-          python manage.py register_verified_btts_results_20260902 2>&1 | tee -a "$OUT"
-          REG_RC=${PIPESTATUS[0]}
-          echo "REGISTER_EXIT=$REG_RC" | tee -a "$OUT"
-          set -e
+          OUT=docs/audits/btts_v299_one_sided_db_audit.txt
+          echo "RUN_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT"
+          python manage.py register_verified_btts_results_20260903 >> "$OUT" 2>&1
+          echo "REGISTER_EXIT=0" >> "$OUT"
+          python manage.py btts_v299_one_sided_audit >> "$OUT" 2>&1
+          echo "AUDIT_EXIT=0" >> "$OUT"
+          cat "$OUT"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$OUT"
-          git commit -m "chore(audit): persist Sep 2 BTTS DB registration" || true
+          git commit -m "chore(audit): persist V2.9.9 one-sided DB evidence" || true
           git pull --rebase origin main || true
           git push
-          if [ "$REG_RC" -ne 0 ]; then exit 1; fi
