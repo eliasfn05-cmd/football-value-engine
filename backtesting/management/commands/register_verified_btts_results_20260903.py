@@ -10,6 +10,8 @@ from engine.models import Fixture, Prediction
 VERIFIED = [
     ("2026-09-03", "Copenhagen", "Nordsjaelland", 2, 0, "LOSS", "TOP3"),
     ("2026-09-03", "Lugano", "Servette", 1, 0, "LOSS", "TOP3"),
+    ("2026-09-03", "Sol de America", "General Caballero JLM", 1, 1, "WIN", "B+"),
+    ("2026-09-03", "Recoleta", "Cerro Porteno", 1, 3, "WIN", "B"),
 ]
 
 
@@ -24,12 +26,12 @@ def sim(a, b):
 
 
 class Command(BaseCommand):
-    help = "Register user-verified BTTS Top-3 results for 2026-09-03."
+    help = "Register user-verified BTTS tracked results for 2026-09-03."
 
     @transaction.atomic
     def handle(self, *args, **options):
-        self.stdout.write("VERIFIED BTTS TOP-3 RESULTS | 2026-09-03")
-        found = updated = missing = one_sided = 0
+        self.stdout.write("VERIFIED BTTS TRACKED RESULTS | 2026-09-03")
+        found = updated = missing = wins = losses = one_sided = zero_zero = 0
         for day, home, away, hg, ag, state, rank in VERIFIED:
             candidates = list(Fixture.objects.filter(kickoff__date=day).select_related("home_team", "away_team"))
             scored = sorted(
@@ -48,13 +50,20 @@ class Command(BaseCommand):
                 fixture.save(update_fields=["home_goals", "away_goals"])
                 updated += 1
             has_prediction = Prediction.objects.filter(fixture=fixture, market__iexact="BTTS").exists()
-            loss_type = "ONE_SIDED" if (hg == 0) ^ (ag == 0) else "ZERO_ZERO" if hg == 0 and ag == 0 else "-"
+            is_btts = hg > 0 and ag > 0
+            actual_state = "WIN" if is_btts else "LOSS"
+            loss_type = "-" if is_btts else ("ZERO_ZERO" if hg == 0 and ag == 0 else "ONE_SIDED")
+            wins += int(is_btts)
+            losses += int(not is_btts)
             one_sided += int(loss_type == "ONE_SIDED")
+            zero_zero += int(loss_type == "ZERO_ZERO")
             self.stdout.write(
                 f"{'UPDATED' if changed else 'OK'} | {rank} | {fixture.home_team.name} vs {fixture.away_team.name} | "
-                f"{hg}-{ag} | {state} | {loss_type} | {'PREDICTION' if has_prediction else 'NO_BTTS_PREDICTION'} | match={best_score:.2f}"
+                f"{hg}-{ag} | {actual_state} | {loss_type} | {'PREDICTION' if has_prediction else 'NO_BTTS_PREDICTION'} | match={best_score:.2f}"
             )
+        hit = wins / found if found else 0.0
         self.stdout.write(self.style.SUCCESS(
-            f"SUMMARY | supplied=2 found={found} updated={updated} missing={missing} losses={found} one_sided={one_sided}. "
+            f"SUMMARY | supplied={len(VERIFIED)} found={found} updated={updated} missing={missing} wins={wins} losses={losses} "
+            f"hit={hit:.4f} zero_zero={zero_zero} one_sided={one_sided}. "
             "Scores are user-verified; no Prediction/PremiumPublicationLedger rows are fabricated."
         ))
