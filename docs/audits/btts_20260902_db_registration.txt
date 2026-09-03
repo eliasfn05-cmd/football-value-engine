@@ -1,0 +1,7 @@
+RUN_UTC=2026-09-03T06:00:07Z
+VERIFIED BTTS TOP-3 RESULTS | 2026-09-02
+OK | A#1 | 2026-09-02 | Yokohama F. Marinos vs Kyoto Sanga | 1-1 | WIN | - | PREDICTION | match=0.78
+OK | A#2 | 2026-09-02 | FC Thun vs Lausanne | 0-0 | LOSS | ZERO_ZERO | PREDICTION | match=1.00
+OK | A#3 | 2026-09-02 | Motherwell vs Dundee Utd | 3-0 | LOSS | ONE_SIDED | PREDICTION | match=0.93
+SUMMARY | supplied=3 found=3 updated=0 missing=0 wins=1 losses=2 hit=0.3333 zero_zero=1 one_sided=1. Scores are user-verified; no Prediction/PremiumPublicationLedger rows are fabricated.
+REGISTER_EXIT=0
