@@ -1,0 +1,23 @@
+RUN_UTC=2026-09-03T20:38:43Z
+VERIFIED BTTS TOP-3 RESULTS | 2026-09-03
+OK | TOP3 | FC Copenhagen vs FC Nordsjaelland | 2-0 | LOSS | ONE_SIDED | PREDICTION | match=1.00
+OK | TOP3 | FC Lugano vs Servette FC | 1-0 | LOSS | ONE_SIDED | PREDICTION | match=1.00
+SUMMARY | supplied=2 found=2 updated=0 missing=0 losses=2 one_sided=2. Scores are user-verified; no Prediction/PremiumPublicationLedger rows are fabricated.
+REGISTER_EXIT=0
+BTTS V2.9.9 ONE-SIDED CASE AUDIT | READ ONLY
+
+CASE | FC Copenhagen vs FC Nordsjaelland | result=2-0 | ONE_SIDED | match=1.00
+V2.9.1 | BLOCK | home_v29_a_overall_recent_scoring | PremiumRiskDecision(blocked=True, code='home_v29_a_overall_recent_scoring', detail='home fails V2.9 bilateral gate: overall_recent_scoring')
+V2.9.9 | BLOCK | home_v29_a_overall_recent_scoring | PremiumRiskDecision(blocked=True, code='home_v29_a_overall_recent_scoring', detail='home fails V2.9 bilateral gate: overall_recent_scoring')
+METRICS | weakest=0.739 calibrated=0.689 consensus=0.649 homeFTS=0.200 awayFTS=0.000 homeL5scored=3 awayL5scored=5
+CONCESSION | home_leg_opp_conceded=3/5 cs=2 | away_leg_opp_conceded=4/5 cs=1
+
+CASE | FC Lugano vs Servette FC | result=1-0 | ONE_SIDED | match=1.00
+V2.9.1 | BLOCK | away_v291_a_outlier_conversion | PremiumRiskDecision(blocked=True, code='away_v291_a_outlier_conversion', detail='away attack depends too much on an outlier match (47.9%>20%)')
+V2.9.9 | BLOCK | away_v291_a_outlier_conversion | PremiumRiskDecision(blocked=True, code='away_v291_a_outlier_conversion', detail='away attack depends too much on an outlier match (47.9%>20%)')
+METRICS | weakest=0.781 calibrated=0.589 consensus=0.659 homeFTS=0.000 awayFTS=0.200 homeL5scored=5 awayL5scored=4
+CONCESSION | home_leg_opp_conceded=3/5 cs=2 | away_leg_opp_conceded=2/5 cs=3
+
+SUMMARY | cases=2 v291_blocked=2 v299_blocked=2 v299_prevented=0
+DECISION | Do not promote V2.9.9 from two cases alone; use this audit to verify the intended ONE_SIDED gates fire pre-kickoff.
+AUDIT_EXIT=0
