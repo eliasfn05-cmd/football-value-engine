@@ -1,0 +1,24 @@
+RUN_UTC=2026-09-04T20:02:59Z
+BTTS LATE FILTER | 2026-09-04 | targets=19 db_fixtures=476
+POLICY | V2.9.1 + V2.9.9 | odds excluded from ranking
+MISSING | Bogota vs Ind Valle del Cauca | best=0.68
+EXCLUDED | Atletico Torque vs Cerro Largo | match=0.70
+MISSING | Deportes Concepcion vs Audax | best=0.63
+EXCLUDED | Escorpiones Belén vs Inter San Carlos | match=0.89
+
+RANKED
+X | Santiago Wanderers vs Deportes Iquique | rank=57.76 raw=52.9 prob=0.531 weak=0.747 cal=0.531 cons=0.621 emp=0.600 maxFTS=0.300 minL5scored=3/5 v291=BLOCK:v291_a_model_disagreement v299A=BLOCK:v291_a_model_disagreement v299B=BLOCK:v291_model_disagreement match=1.00
+X | CA La Paz vs Mineros de Zacatecas | rank=55.84 raw=51.7 prob=0.546 weak=0.694 cal=0.546 cons=0.589 emp=0.500 maxFTS=0.200 minL5scored=4/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.68
+X | FC Juarez vs CF Pachuca | rank=54.57 raw=59.3 prob=0.576 weak=0.708 cal=0.576 cons=0.617 emp=0.550 maxFTS=0.400 minL5scored=3/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:home_v29_overall_recent_scoring match=1.00
+X | Loudoun United vs Colorado Springs | rank=52.96 raw=50.4 prob=0.510 weak=0.730 cal=0.510 cons=0.575 emp=0.450 maxFTS=0.300 minL5scored=3/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:home_v29_overall_recent_scoring match=0.83
+X | Resistencia vs Guairena FC | rank=50.78 raw=56.7 prob=0.563 weak=0.673 cal=0.563 cons=0.600 emp=0.557 maxFTS=0.500 minL5scored=2/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | New York City FC vs Nashville SC | rank=48.70 raw=46.2 prob=0.462 weak=0.648 cal=0.462 cons=0.515 emp=0.400 maxFTS=0.200 minL5scored=4/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Orsomarso vs Real Cartagena | rank=45.71 raw=45.9 prob=0.538 weak=0.634 cal=0.538 cons=0.534 emp=0.350 maxFTS=0.400 minL5scored=3/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | D. Puerto Montt vs Curico Unido | rank=41.89 raw=41.5 prob=0.469 weak=0.601 cal=0.469 cons=0.492 emp=0.350 maxFTS=0.400 minL5scored=2/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.96
+X | Criciuma vs Cuiaba | rank=38.41 raw=37.6 prob=0.368 weak=0.584 cal=0.368 cons=0.430 emp=0.300 maxFTS=0.300 minL5scored=3/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Durango vs Tlaxcala | rank=36.93 raw=48.7 prob=0.491 weak=0.487 cal=0.491 cons=0.471 emp=0.400 maxFTS=0.500 minL5scored=2/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.79
+X | CRB vs America Mineiro | rank=34.10 raw=46.2 prob=0.383 weak=0.416 cal=0.383 cons=0.398 emp=0.400 maxFTS=0.300 minL5scored=3/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.86
+X | Tecnico Universitario vs LDU de Quito | rank=29.94 raw=27.4 prob=0.293 weak=0.614 cal=0.293 cons=0.397 emp=0.250 maxFTS=0.600 minL5scored=3/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.73
+X | Athletic Club vs Vila Nova | rank=28.10 raw=23.5 prob=0.362 weak=0.439 cal=0.362 cons=0.377 emp=0.300 maxFTS=0.500 minL5scored=2/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Rangers de Talca vs Deportes Temuco | rank=23.00 raw=16.9 prob=0.221 weak=0.459 cal=0.221 cons=0.330 emp=0.350 maxFTS=0.600 minL5scored=3/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.80
+X | El Nacional vs LDU Portoviejo | rank=12.73 raw=0.0 prob=0.011 weak=0.482 cal=0.011 cons=0.210 emp=0.181 maxFTS=0.600 minL5scored=1/5 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
