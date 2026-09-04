@@ -1,0 +1,1941 @@
+RUN_UTC=2026-09-04T09:40:45Z
+TARGET_MISSING | Oster vs Nordic United | best=0.69
+TARGET_MISSING | Piast vs Katowice | best=0.68
+TARGET_MISSING | Caernarfon vs Flint | best=0.63
+TARGET_MISSING | Cardiff Metropolitan vs Cambrian United | best=0.68
+TARGET_MISSING | Drogheda vs Galway | best=0.66
+TARGET_MISSING | Termalica vs Lechia | best=0.52
+TARGET_MISSING | PSG vs Monaco | best=0.64
+TARGET_MISSING | Alianza Atletico vs UTC | best=0.69
+TARGET_MISSING | Leones vs Atletico FC | best=0.65
+TARGET BACKFILL PREP | date=2026-09-04 targets=69 matched=60 target_missing=9
+SCORING | Chornomorets vs Livyi Bereh | external_id=1565465
+{
+  "fixture_id": "1565465",
+  "match": "Chornomorets vs Livyi Bereh",
+  "kickoff": "2026-09-04T10:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.45477,
+      "market_odds": null,
+      "fair_odds": 2.199,
+      "edge": null,
+      "expected_value": null,
+      "score": 37.5,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.42452,
+      "market_odds": null,
+      "fair_odds": 2.356,
+      "edge": null,
+      "expected_value": null,
+      "score": 37.5,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Bali United vs PSS Sleman | external_id=1621305
+{
+  "fixture_id": "1621305",
+  "match": "Bali United vs PSS Sleman",
+  "kickoff": "2026-09-04T12:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.45888,
+      "market_odds": null,
+      "fair_odds": 2.179,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.0,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history",
+        "no_away_venue_history"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.41464,
+      "market_odds": null,
+      "fair_odds": 2.412,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.0,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history",
+        "no_away_venue_history"
+      ]
+    }
+  ]
+}
+SCORING | Pattani vs BG Pathum United | external_id=1598012
+{
+  "fixture_id": "1598012",
+  "match": "Pattani vs BG Pathum United",
+  "kickoff": "2026-09-04T12:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.45888,
+      "market_odds": null,
+      "fair_odds": 2.179,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.0,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history",
+        "no_away_venue_history"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.41464,
+      "market_odds": null,
+      "fair_odds": 2.412,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.0,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history",
+        "no_away_venue_history"
+      ]
+    }
+  ]
+}
+SCORING | Uttaradit vs Muangthong United | external_id=1602646
+{
+  "fixture_id": "1602646",
+  "match": "Uttaradit vs Muangthong United",
+  "kickoff": "2026-09-04T12:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.45888,
+      "market_odds": null,
+      "fair_odds": 2.179,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.0,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history",
+        "no_away_venue_history"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.41464,
+      "market_odds": null,
+      "fair_odds": 2.412,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.0,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history",
+        "no_away_venue_history"
+      ]
+    }
+  ]
+}
+SCORING | Al-Ittihad Kalba vs Al Ain | external_id=1599445
+{
+  "fixture_id": "1599445",
+  "match": "Al-Ittihad Kalba vs Al Ain",
+  "kickoff": "2026-09-04T13:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.29629,
+      "market_odds": null,
+      "fair_odds": 3.375,
+      "edge": null,
+      "expected_value": null,
+      "score": 19.5,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.60876,
+      "market_odds": null,
+      "fair_odds": 1.643,
+      "edge": null,
+      "expected_value": null,
+      "score": 42.9,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Lucko vs Solin | external_id=1595214
+{
+  "fixture_id": "1595214",
+  "match": "Lucko vs Solin",
+  "kickoff": "2026-09-04T15:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.5017,
+      "market_odds": null,
+      "fair_odds": 1.993,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.0,
+      "tier": "",
+      "gate_failures": [
+        "no_away_venue_history"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.31105,
+      "market_odds": null,
+      "fair_odds": 3.215,
+      "edge": null,
+      "expected_value": null,
+      "score": 12.0,
+      "tier": "",
+      "gate_failures": [
+        "no_away_venue_history"
+      ]
+    }
+  ]
+}
+SCORING | Uljanik vs Dugo Selo | external_id=1595218
+{
+  "fixture_id": "1595218",
+  "match": "Uljanik vs Dugo Selo",
+  "kickoff": "2026-09-04T15:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.69823,
+      "market_odds": null,
+      "fair_odds": 1.432,
+      "edge": null,
+      "expected_value": null,
+      "score": 53.9,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.56725,
+      "market_odds": null,
+      "fair_odds": 1.763,
+      "edge": null,
+      "expected_value": null,
+      "score": 36.1,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Polessya vs Kudrivka | external_id=1565471
+{
+  "fixture_id": "1565471",
+  "match": "Polessya vs Kudrivka",
+  "kickoff": "2026-09-04T15:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.64096,
+      "market_odds": null,
+      "fair_odds": 1.56,
+      "edge": null,
+      "expected_value": null,
+      "score": 54.9,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.66855,
+      "market_odds": null,
+      "fair_odds": 1.496,
+      "edge": null,
+      "expected_value": null,
+      "score": 59.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Hobro vs Hvidovre | external_id=1551329
+{
+  "fixture_id": "1551329",
+  "match": "Hobro vs Hvidovre",
+  "kickoff": "2026-09-04T16:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.48059,
+      "market_odds": null,
+      "fair_odds": 2.081,
+      "edge": null,
+      "expected_value": null,
+      "score": 38.4,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.38026,
+      "market_odds": null,
+      "fair_odds": 2.63,
+      "edge": null,
+      "expected_value": null,
+      "score": 25.8,
+      "tier": "",
+      "gate_failures": [
+        "away_over25_very_low",
+        "away_total_goals_low",
+        "market_confidence_below_50"
+      ]
+    }
+  ]
+}
+SCORING | Vejle vs Vendsyssel FF | external_id=1551330
+{
+  "fixture_id": "1551330",
+  "match": "Vejle vs Vendsyssel FF",
+  "kickoff": "2026-09-04T16:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.6823,
+      "market_odds": null,
+      "fair_odds": 1.466,
+      "edge": null,
+      "expected_value": null,
+      "score": 68.9,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.72481,
+      "market_odds": null,
+      "fair_odds": 1.38,
+      "edge": null,
+      "expected_value": null,
+      "score": 74.0,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Liptovský Mikuláš vs Inter Bratislava | external_id=1561117
+{
+  "fixture_id": "1561117",
+  "match": "Liptovský Mikuláš vs Inter Bratislava",
+  "kickoff": "2026-09-04T16:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.52158,
+      "market_odds": null,
+      "fair_odds": 1.917,
+      "edge": null,
+      "expected_value": null,
+      "score": 33.8,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.52814,
+      "market_odds": null,
+      "fair_odds": 1.893,
+      "edge": null,
+      "expected_value": null,
+      "score": 34.6,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history"
+      ]
+    }
+  ]
+}
+SCORING | Pogoń Grod. Mazowiecki vs Warta Poznań | external_id=1558204
+{
+  "fixture_id": "1558204",
+  "match": "Pogoń Grod. Mazowiecki vs Warta Poznań",
+  "kickoff": "2026-09-04T16:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.61838,
+      "market_odds": null,
+      "fair_odds": 1.617,
+      "edge": null,
+      "expected_value": null,
+      "score": 55.8,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.61436,
+      "market_odds": null,
+      "fair_odds": 1.628,
+      "edge": null,
+      "expected_value": null,
+      "score": 55.3,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Stal Stalowa Wola vs Zawisza Bydgoszcz | external_id=1561648
+{
+  "fixture_id": "1561648",
+  "match": "Stal Stalowa Wola vs Zawisza Bydgoszcz",
+  "kickoff": "2026-09-04T16:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.45086,
+      "market_odds": null,
+      "fair_odds": 2.218,
+      "edge": null,
+      "expected_value": null,
+      "score": 33.8,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.6932,
+      "market_odds": null,
+      "fair_odds": 1.443,
+      "edge": null,
+      "expected_value": null,
+      "score": 57.0,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Al-Wasl FC vs Khorfakkan | external_id=1599446
+{
+  "fixture_id": "1599446",
+  "match": "Al-Wasl FC vs Khorfakkan",
+  "kickoff": "2026-09-04T16:15:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.27736,
+      "market_odds": null,
+      "fair_odds": 3.605,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "market_confidence_below_50",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.31952,
+      "market_odds": null,
+      "fair_odds": 3.13,
+      "edge": null,
+      "expected_value": null,
+      "score": 19.7,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Arminia Bielefeld vs FC St. Pauli | external_id=1576161
+{
+  "fixture_id": "1576161",
+  "match": "Arminia Bielefeld vs FC St. Pauli",
+  "kickoff": "2026-09-04T16:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.42755,
+      "market_odds": null,
+      "fair_odds": 2.339,
+      "edge": null,
+      "expected_value": null,
+      "score": 44.6,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.41794,
+      "market_odds": null,
+      "fair_odds": 2.393,
+      "edge": null,
+      "expected_value": null,
+      "score": 41.5,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Hannover 96 vs Karlsruher SC | external_id=1576163
+{
+  "fixture_id": "1576163",
+  "match": "Hannover 96 vs Karlsruher SC",
+  "kickoff": "2026-09-04T16:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.59108,
+      "market_odds": null,
+      "fair_odds": 1.692,
+      "edge": null,
+      "expected_value": null,
+      "score": 60.1,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.62104,
+      "market_odds": null,
+      "fair_odds": 1.61,
+      "edge": null,
+      "expected_value": null,
+      "score": 63.7,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Vasas vs Nyiregyhaza | external_id=1560241
+{
+  "fixture_id": "1560241",
+  "match": "Vasas vs Nyiregyhaza",
+  "kickoff": "2026-09-04T16:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.45073,
+      "market_odds": null,
+      "fair_odds": 2.219,
+      "edge": null,
+      "expected_value": null,
+      "score": 32.1,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.52022,
+      "market_odds": null,
+      "fair_odds": 1.922,
+      "edge": null,
+      "expected_value": null,
+      "score": 44.8,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+EXCLUDED | FC Ingolstadt 04 vs Alemannia Aachen
+SCORING | Viborg vs Lyngby | external_id=1549010
+{
+  "fixture_id": "1549010",
+  "match": "Viborg vs Lyngby",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.43098,
+      "market_odds": null,
+      "fair_odds": 2.32,
+      "edge": null,
+      "expected_value": null,
+      "score": 43.4,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.47109,
+      "market_odds": null,
+      "fair_odds": 2.123,
+      "edge": null,
+      "expected_value": null,
+      "score": 47.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | HB Koge vs Hillerød | external_id=1551331
+{
+  "fixture_id": "1551331",
+  "match": "HB Koge vs Hillerød",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.44304,
+      "market_odds": null,
+      "fair_odds": 2.257,
+      "edge": null,
+      "expected_value": null,
+      "score": 19.0,
+      "tier": "",
+      "gate_failures": [
+        "combined_btts_rate_very_low",
+        "failed_to_score_risk_high",
+        "extreme_btts_contradiction",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.67254,
+      "market_odds": null,
+      "fair_odds": 1.487,
+      "edge": null,
+      "expected_value": null,
+      "score": 56.1,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Lyon vs Auxerre | external_id=1552750
+{
+  "fixture_id": "1552750",
+  "match": "Lyon vs Auxerre",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.67823,
+      "market_odds": null,
+      "fair_odds": 1.474,
+      "edge": null,
+      "expected_value": null,
+      "score": 68.6,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.61725,
+      "market_odds": null,
+      "fair_odds": 1.62,
+      "edge": null,
+      "expected_value": null,
+      "score": 61.3,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Aalesund vs Start | external_id=1494748
+{
+  "fixture_id": "1494748",
+  "match": "Aalesund vs Start",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.78904,
+      "market_odds": null,
+      "fair_odds": 1.267,
+      "edge": null,
+      "expected_value": null,
+      "score": 81.2,
+      "tier": "CANDIDATE",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.84427,
+      "market_odds": null,
+      "fair_odds": 1.184,
+      "edge": null,
+      "expected_value": null,
+      "score": 81.2,
+      "tier": "CANDIDATE",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Fredrikstad vs Bodo/Glimt | external_id=1494750
+{
+  "fixture_id": "1494750",
+  "match": "Fredrikstad vs Bodo/Glimt",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.46103,
+      "market_odds": null,
+      "fair_odds": 2.169,
+      "edge": null,
+      "expected_value": null,
+      "score": 37.1,
+      "tier": "",
+      "gate_failures": [
+        "home_clean_sheet_high",
+        "market_confidence_below_50"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.48314,
+      "market_odds": null,
+      "fair_odds": 2.07,
+      "edge": null,
+      "expected_value": null,
+      "score": 38.0,
+      "tier": "",
+      "gate_failures": [
+        "market_confidence_below_50"
+      ]
+    }
+  ]
+}
+SCORING | Novi Pazar vs Železničar Pančevo | external_id=1553860
+{
+  "fixture_id": "1553860",
+  "match": "Novi Pazar vs Železničar Pančevo",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.44963,
+      "market_odds": null,
+      "fair_odds": 2.224,
+      "edge": null,
+      "expected_value": null,
+      "score": 41.1,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.48726,
+      "market_odds": null,
+      "fair_odds": 2.052,
+      "edge": null,
+      "expected_value": null,
+      "score": 45.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | IFK Norrkoping vs Ljungskile SK | external_id=1497684
+{
+  "fixture_id": "1497684",
+  "match": "IFK Norrkoping vs Ljungskile SK",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.31387,
+      "market_odds": null,
+      "fair_odds": 3.186,
+      "edge": null,
+      "expected_value": null,
+      "score": 18.6,
+      "tier": "",
+      "gate_failures": [
+        "home_clean_sheet_high",
+        "market_confidence_below_50",
+        "combined_btts_rate_very_low",
+        "clean_sheet_risk_high",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.42105,
+      "market_odds": null,
+      "fair_odds": 2.375,
+      "edge": null,
+      "expected_value": null,
+      "score": 33.7,
+      "tier": "",
+      "gate_failures": [
+        "away_over25_low",
+        "away_total_goals_low",
+        "market_confidence_below_50"
+      ]
+    }
+  ]
+}
+SCORING | Başakşehir vs Galatasaray | external_id=1584394
+{
+  "fixture_id": "1584394",
+  "match": "Başakşehir vs Galatasaray",
+  "kickoff": "2026-09-04T17:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.53949,
+      "market_odds": null,
+      "fair_odds": 1.854,
+      "edge": null,
+      "expected_value": null,
+      "score": 45.4,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.48869,
+      "market_odds": null,
+      "fair_odds": 2.046,
+      "edge": null,
+      "expected_value": null,
+      "score": 46.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Independiente F.b.c. vs Fernando De La Mora | external_id=1636632
+{
+  "fixture_id": "1636632",
+  "match": "Independiente F.b.c. vs Fernando De La Mora",
+  "kickoff": "2026-09-04T17:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.43888,
+      "market_odds": null,
+      "fair_odds": 2.279,
+      "edge": null,
+      "expected_value": null,
+      "score": 45.2,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.45464,
+      "market_odds": null,
+      "fair_odds": 2.2,
+      "edge": null,
+      "expected_value": null,
+      "score": 44.0,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | FC Aarau vs Rapperswil | external_id=1555047
+{
+  "fixture_id": "1555047",
+  "match": "FC Aarau vs Rapperswil",
+  "kickoff": "2026-09-04T17:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.71516,
+      "market_odds": null,
+      "fair_odds": 1.398,
+      "edge": null,
+      "expected_value": null,
+      "score": 76.0,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.70975,
+      "market_odds": null,
+      "fair_odds": 1.409,
+      "edge": null,
+      "expected_value": null,
+      "score": 75.4,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | SC Kriens vs Stade Lausanne-Ouchy | external_id=1555048
+{
+  "fixture_id": "1555048",
+  "match": "SC Kriens vs Stade Lausanne-Ouchy",
+  "kickoff": "2026-09-04T17:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.59586,
+      "market_odds": null,
+      "fair_odds": 1.678,
+      "edge": null,
+      "expected_value": null,
+      "score": 58.0,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.62435,
+      "market_odds": null,
+      "fair_odds": 1.602,
+      "edge": null,
+      "expected_value": null,
+      "score": 62.1,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | NK Varazdin vs Istra 1961 | external_id=1548526
+{
+  "fixture_id": "1548526",
+  "match": "NK Varazdin vs Istra 1961",
+  "kickoff": "2026-09-04T18:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.41156,
+      "market_odds": null,
+      "fair_odds": 2.43,
+      "edge": null,
+      "expected_value": null,
+      "score": 41.5,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.48314,
+      "market_odds": null,
+      "fair_odds": 2.07,
+      "edge": null,
+      "expected_value": null,
+      "score": 45.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Sparta Rotterdam vs PEC Zwolle | external_id=1552153
+{
+  "fixture_id": "1552153",
+  "match": "Sparta Rotterdam vs PEC Zwolle",
+  "kickoff": "2026-09-04T18:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.53449,
+      "market_odds": null,
+      "fair_odds": 1.871,
+      "edge": null,
+      "expected_value": null,
+      "score": 40.8,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.57924,
+      "market_odds": null,
+      "fair_odds": 1.726,
+      "edge": null,
+      "expected_value": null,
+      "score": 46.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+EXCLUDED | FC Cajamarca vs Cienciano
+SCORING | Ind. Juniors vs Deportivo Cuenca Juniors | external_id=1632424
+{
+  "fixture_id": "1632424",
+  "match": "Ind. Juniors vs Deportivo Cuenca Juniors",
+  "kickoff": "2026-09-04T18:15:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.17628,
+      "market_odds": null,
+      "fair_odds": 5.673,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "away_failed_to_score_high",
+        "home_clean_sheet_high",
+        "competition_btts_low",
+        "market_confidence_below_50",
+        "combined_btts_rate_very_low",
+        "failed_to_score_risk",
+        "clean_sheet_risk_high",
+        "extreme_btts_contradiction",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.36464,
+      "market_odds": null,
+      "fair_odds": 2.742,
+      "edge": null,
+      "expected_value": null,
+      "score": 32.3,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Nafta vs Radomlje | external_id=1558007
+{
+  "fixture_id": "1558007",
+  "match": "Nafta vs Radomlje",
+  "kickoff": "2026-09-04T18:15:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.63986,
+      "market_odds": null,
+      "fair_odds": 1.563,
+      "edge": null,
+      "expected_value": null,
+      "score": 47.4,
+      "tier": "",
+      "gate_failures": [
+        "no_away_venue_history"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.64733,
+      "market_odds": null,
+      "fair_odds": 1.545,
+      "edge": null,
+      "expected_value": null,
+      "score": 48.3,
+      "tier": "",
+      "gate_failures": [
+        "no_away_venue_history"
+      ]
+    }
+  ]
+}
+SCORING | Étoile Carouge vs FC WIL 1900 | external_id=1555049
+{
+  "fixture_id": "1555049",
+  "match": "Étoile Carouge vs FC WIL 1900",
+  "kickoff": "2026-09-04T18:15:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.74268,
+      "market_odds": null,
+      "fair_odds": 1.346,
+      "edge": null,
+      "expected_value": null,
+      "score": 80.3,
+      "tier": "CANDIDATE",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.81531,
+      "market_odds": null,
+      "fair_odds": 1.227,
+      "edge": null,
+      "expected_value": null,
+      "score": 81.2,
+      "tier": "CANDIDATE",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | FC Winterthur vs Neuchatel Xamax FC | external_id=1555050
+{
+  "fixture_id": "1555050",
+  "match": "FC Winterthur vs Neuchatel Xamax FC",
+  "kickoff": "2026-09-04T18:15:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.46482,
+      "market_odds": null,
+      "fair_odds": 2.151,
+      "edge": null,
+      "expected_value": null,
+      "score": 45.2,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.50726,
+      "market_odds": null,
+      "fair_odds": 1.971,
+      "edge": null,
+      "expected_value": null,
+      "score": 46.1,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | VfB Stuttgart vs 1. FC Köln | external_id=1575149
+{
+  "fixture_id": "1575149",
+  "match": "VfB Stuttgart vs 1. FC Köln",
+  "kickoff": "2026-09-04T18:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.63563,
+      "market_odds": null,
+      "fair_odds": 1.573,
+      "edge": null,
+      "expected_value": null,
+      "score": 58.5,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.66855,
+      "market_odds": null,
+      "fair_odds": 1.496,
+      "edge": null,
+      "expected_value": null,
+      "score": 62.4,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Livingston vs Stenhousemuir | external_id=1556848
+{
+  "fixture_id": "1556848",
+  "match": "Livingston vs Stenhousemuir",
+  "kickoff": "2026-09-04T18:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.48917,
+      "market_odds": null,
+      "fair_odds": 2.044,
+      "edge": null,
+      "expected_value": null,
+      "score": 28.5,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.50824,
+      "market_odds": null,
+      "fair_odds": 1.968,
+      "edge": null,
+      "expected_value": null,
+      "score": 28.3,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Las Palmas vs Leganes | external_id=1569910
+{
+  "fixture_id": "1569910",
+  "match": "Las Palmas vs Leganes",
+  "kickoff": "2026-09-04T18:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.4334,
+      "market_odds": null,
+      "fair_odds": 2.307,
+      "edge": null,
+      "expected_value": null,
+      "score": 38.7,
+      "tier": "",
+      "gate_failures": [
+        "home_clean_sheet_high",
+        "competition_btts_low",
+        "market_confidence_below_50"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.48109,
+      "market_odds": null,
+      "fair_odds": 2.079,
+      "edge": null,
+      "expected_value": null,
+      "score": 47.4,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Lommel United vs Club Brugge KV | external_id=1558617
+{
+  "fixture_id": "1558617",
+  "match": "Lommel United vs Club Brugge KV",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.44095,
+      "market_odds": null,
+      "fair_odds": 2.268,
+      "edge": null,
+      "expected_value": null,
+      "score": 31.3,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.57596,
+      "market_odds": null,
+      "fair_odds": 1.736,
+      "edge": null,
+      "expected_value": null,
+      "score": 45.6,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Briton Ferry vs Airbus UK | external_id=1575932
+{
+  "fixture_id": "1575932",
+  "match": "Briton Ferry vs Airbus UK",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.69913,
+      "market_odds": null,
+      "fair_odds": 1.43,
+      "edge": null,
+      "expected_value": null,
+      "score": 62.4,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.80496,
+      "market_odds": null,
+      "fair_odds": 1.242,
+      "edge": null,
+      "expected_value": null,
+      "score": 68.5,
+      "tier": "CANDIDATE",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | GAP Connah S Quay FC vs Haverfordwest County AFC | external_id=1575935
+{
+  "fixture_id": "1575935",
+  "match": "GAP Connah S Quay FC vs Haverfordwest County AFC",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.01,
+      "market_odds": null,
+      "fair_odds": 100.0,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "market_confidence_below_50",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.44109,
+      "market_odds": null,
+      "fair_odds": 2.267,
+      "edge": null,
+      "expected_value": null,
+      "score": 20.7,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Holywell vs Trefelin | external_id=1575936
+{
+  "fixture_id": "1575936",
+  "match": "Holywell vs Trefelin",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.72021,
+      "market_odds": null,
+      "fair_odds": 1.388,
+      "edge": null,
+      "expected_value": null,
+      "score": 66.2,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.75447,
+      "market_odds": null,
+      "fair_odds": 1.325,
+      "edge": null,
+      "expected_value": null,
+      "score": 69.8,
+      "tier": "CANDIDATE",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Llandudno vs Ammanford AFC | external_id=1575937
+{
+  "fixture_id": "1575937",
+  "match": "Llandudno vs Ammanford AFC",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.35294,
+      "market_odds": null,
+      "fair_odds": 2.833,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.7,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.19677,
+      "market_odds": null,
+      "fair_odds": 5.082,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "market_confidence_below_50",
+        "market_intelligence_below_40"
+      ]
+    }
+  ]
+}
+SCORING | Bray Wanderers vs Cork City | external_id=1492965
+{
+  "fixture_id": "1492965",
+  "match": "Bray Wanderers vs Cork City",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.645,
+      "market_odds": null,
+      "fair_odds": 1.55,
+      "edge": null,
+      "expected_value": null,
+      "score": 47.2,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.64733,
+      "market_odds": null,
+      "fair_odds": 1.545,
+      "edge": null,
+      "expected_value": null,
+      "score": 47.5,
+      "tier": "",
+      "gate_failures": [
+        "no_home_venue_history"
+      ]
+    }
+  ]
+}
+SCORING | Cobh Ramblers vs UCD | external_id=1492966
+{
+  "fixture_id": "1492966",
+  "match": "Cobh Ramblers vs UCD",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.67288,
+      "market_odds": null,
+      "fair_odds": 1.486,
+      "edge": null,
+      "expected_value": null,
+      "score": 52.9,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.51876,
+      "market_odds": null,
+      "fair_odds": 1.928,
+      "edge": null,
+      "expected_value": null,
+      "score": 32.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Finn Harps vs Athlone Town | external_id=1492967
+{
+  "fixture_id": "1492967",
+  "match": "Finn Harps vs Athlone Town",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.40629,
+      "market_odds": null,
+      "fair_odds": 2.461,
+      "edge": null,
+      "expected_value": null,
+      "score": 27.0,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.51876,
+      "market_odds": null,
+      "fair_odds": 1.928,
+      "edge": null,
+      "expected_value": null,
+      "score": 29.2,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Treaty United vs Wexford | external_id=1492968
+{
+  "fixture_id": "1492968",
+  "match": "Treaty United vs Wexford",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.63261,
+      "market_odds": null,
+      "fair_odds": 1.581,
+      "edge": null,
+      "expected_value": null,
+      "score": 52.8,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.65424,
+      "market_odds": null,
+      "fair_odds": 1.528,
+      "edge": null,
+      "expected_value": null,
+      "score": 55.4,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Waterford vs Sligo Rovers | external_id=1629910
+{
+  "fixture_id": "1629910",
+  "match": "Waterford vs Sligo Rovers",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.49098,
+      "market_odds": null,
+      "fair_odds": 2.037,
+      "edge": null,
+      "expected_value": null,
+      "score": 36.5,
+      "tier": "",
+      "gate_failures": [
+        "away_failed_to_score_high",
+        "market_confidence_below_50"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.47109,
+      "market_odds": null,
+      "fair_odds": 2.123,
+      "edge": null,
+      "expected_value": null,
+      "score": 46.0,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Genoa vs Como | external_id=1550112
+{
+  "fixture_id": "1550112",
+  "match": "Genoa vs Como",
+  "kickoff": "2026-09-04T18:45:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.58802,
+      "market_odds": null,
+      "fair_odds": 1.701,
+      "edge": null,
+      "expected_value": null,
+      "score": 52.8,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.5568,
+      "market_odds": null,
+      "fair_odds": 1.796,
+      "edge": null,
+      "expected_value": null,
+      "score": 49.0,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Real Betis vs Real Madrid | external_id=1570365
+{
+  "fixture_id": "1570365",
+  "match": "Real Betis vs Real Madrid",
+  "kickoff": "2026-09-04T19:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.47242,
+      "market_odds": null,
+      "fair_odds": 2.117,
+      "edge": null,
+      "expected_value": null,
+      "score": 48.2,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.44464,
+      "market_odds": null,
+      "fair_odds": 2.249,
+      "edge": null,
+      "expected_value": null,
+      "score": 42.9,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Ipswich vs Liverpool | external_id=1557393
+{
+  "fixture_id": "1557393",
+  "match": "Ipswich vs Liverpool",
+  "kickoff": "2026-09-04T19:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.6044,
+      "market_odds": null,
+      "fair_odds": 1.655,
+      "edge": null,
+      "expected_value": null,
+      "score": 61.7,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.72975,
+      "market_odds": null,
+      "fair_odds": 1.37,
+      "edge": null,
+      "expected_value": null,
+      "score": 76.8,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Sandefjord vs Viking | external_id=1494754
+{
+  "fixture_id": "1494754",
+  "match": "Sandefjord vs Viking",
+  "kickoff": "2026-09-04T19:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.53724,
+      "market_odds": null,
+      "fair_odds": 1.861,
+      "edge": null,
+      "expected_value": null,
+      "score": 52.9,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.492,
+      "market_odds": null,
+      "fair_odds": 2.033,
+      "edge": null,
+      "expected_value": null,
+      "score": 48.4,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+EXCLUDED | União Santarém vs Caldas
+SCORING | La Luz vs Sportivo Huracan | external_id=1636744
+{
+  "fixture_id": "1636744",
+  "match": "La Luz vs Sportivo Huracan",
+  "kickoff": "2026-09-04T19:00:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.06804,
+      "market_odds": null,
+      "fair_odds": 14.698,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "away_failed_to_score_high",
+        "home_clean_sheet_high",
+        "market_confidence_below_50",
+        "combined_btts_rate_very_low",
+        "failed_to_score_risk_high",
+        "clean_sheet_risk",
+        "extreme_btts_contradiction",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.09656,
+      "market_odds": null,
+      "fair_odds": 10.356,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "away_over25_very_low",
+        "away_total_goals_very_low",
+        "competition_over25_low",
+        "market_confidence_below_50",
+        "low_score_script_very_high",
+        "avg_total_goals_very_low",
+        "extreme_low_score_script",
+        "market_intelligence_below_40"
+      ]
+    }
+  ]
+}
+SCORING | FC Porto vs Moreirense | external_id=1575485
+{
+  "fixture_id": "1575485",
+  "match": "FC Porto vs Moreirense",
+  "kickoff": "2026-09-04T19:15:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.35281,
+      "market_odds": null,
+      "fair_odds": 2.834,
+      "edge": null,
+      "expected_value": null,
+      "score": 24.8,
+      "tier": "",
+      "gate_failures": [
+        "home_clean_sheet_high",
+        "competition_btts_low",
+        "market_confidence_below_50"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.36964,
+      "market_odds": null,
+      "fair_odds": 2.705,
+      "edge": null,
+      "expected_value": null,
+      "score": 31.4,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Sportivo Carapeguá vs Paraguari AC | external_id=1636633
+{
+  "fixture_id": "1636633",
+  "match": "Sportivo Carapeguá vs Paraguari AC",
+  "kickoff": "2026-09-04T19:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.61095,
+      "market_odds": null,
+      "fair_odds": 1.637,
+      "edge": null,
+      "expected_value": null,
+      "score": 62.5,
+      "tier": "",
+      "gate_failures": []
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.56876,
+      "market_odds": null,
+      "fair_odds": 1.758,
+      "edge": null,
+      "expected_value": null,
+      "score": 57.4,
+      "tier": "",
+      "gate_failures": []
+    }
+  ]
+}
+SCORING | Atletico FC vs 9 de Octubre | external_id=1632425
+{
+  "fixture_id": "1632425",
+  "match": "Atletico FC vs 9 de Octubre",
+  "kickoff": "2026-09-04T20:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.09249,
+      "market_odds": null,
+      "fair_odds": 10.812,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "away_failed_to_score_high",
+        "home_clean_sheet_high",
+        "competition_btts_low",
+        "market_confidence_below_50",
+        "combined_btts_rate_very_low",
+        "failed_to_score_risk_high",
+        "clean_sheet_risk_high",
+        "extreme_btts_contradiction",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.13713,
+      "market_odds": null,
+      "fair_odds": 7.292,
+      "edge": null,
+      "expected_value": null,
+      "score": 0.0,
+      "tier": "",
+      "gate_failures": [
+        "away_over25_very_low",
+        "away_total_goals_very_low",
+        "competition_over25_low",
+        "market_confidence_below_50",
+        "low_score_script_very_high",
+        "avg_total_goals_very_low",
+        "extreme_low_score_script",
+        "market_intelligence_below_40"
+      ]
+    }
+  ]
+}
+SCORING | 22 de Julio vs Gualaceo SC | external_id=1632418
+{
+  "fixture_id": "1632418",
+  "match": "22 de Julio vs Gualaceo SC",
+  "kickoff": "2026-09-04T20:30:00+00:00",
+  "markets": [
+    {
+      "market": "BTTS",
+      "selection": "YES",
+      "probability": 0.25602,
+      "market_odds": null,
+      "fair_odds": 3.906,
+      "edge": null,
+      "expected_value": null,
+      "score": 20.2,
+      "tier": "",
+      "gate_failures": [
+        "combined_btts_rate_very_low",
+        "failed_to_score_risk_high",
+        "market_intelligence_below_40"
+      ]
+    },
+    {
+      "market": "OVER_2_5",
+      "selection": "OVER",
+      "probability": 0.38526,
+      "market_odds": null,
+      "fair_odds": 2.596,
+      "edge": null,
+      "expected_value": null,
+      "score": 23.9,
+      "tier": "",
+      "gate_failures": [
+        "away_over25_very_low",
+        "away_total_goals_very_low",
+        "competition_over25_low",
+        "market_confidence_below_50"
+      ]
+    }
+  ]
+}
+TARGET BACKFILL RESULT | matched=60 excluded=3 already_predicted=1 stale_states_cleared=0 created=56 still_missing=0

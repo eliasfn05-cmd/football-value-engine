@@ -1,74 +1,74 @@
-RUN_UTC=2026-09-04T09:20:38Z
+RUN_UTC=2026-09-04T09:46:19Z
 BTTS SYSTEM FILTER | 2026-09-04 | targets=69 db_fixtures=473
 POLICY | production baseline V2.9.1 + V2.9.9 audit guard | pre-kickoff metrics only
-NO_PRED | Chornomorets vs Livyi Bereh | match=0.90
-NO_PRED | Bali United vs PSS Sleman | match=1.00
-NO_PRED | Pattani vs BG Pathum United | match=0.95
-NO_PRED | Uttaradit vs Muangthong United | match=0.87
-NO_PRED | Al-Ittihad Kalba vs Al Ain | match=0.95
-NO_PRED | Lucko vs Solin | match=1.00
-NO_PRED | Uljanik vs Dugo Selo | match=0.87
-NO_PRED | Polessya vs Kudrivka | match=0.78
-NO_PRED | Hobro vs Hvidovre | match=1.00
-NO_PRED | Vejle vs Vendsyssel FF | match=0.93
-NO_PRED | Liptovský Mikuláš vs Inter Bratislava | match=1.00
-NO_PRED | Pogoń Grod. Mazowiecki vs Warta Poznań | match=0.88
-NO_PRED | Stal Stalowa Wola vs Zawisza Bydgoszcz | match=0.71
-NO_PRED | Al-Wasl FC vs Khorfakkan | match=1.00
-NO_PRED | Arminia Bielefeld vs FC St. Pauli | match=1.00
-NO_PRED | Hannover 96 vs Karlsruher SC | match=0.92
-NO_PRED | Vasas vs Nyiregyhaza | match=1.00
 NO_PRED | FC Ingolstadt 04 vs Alemannia Aachen | match=0.71
-NO_PRED | Viborg vs Lyngby | match=1.00
-NO_PRED | HB Koge vs Hillerød | match=0.83
-NO_PRED | Lyon vs Auxerre | match=1.00
-NO_PRED | Aalesund vs Start | match=1.00
-NO_PRED | Fredrikstad vs Bodo/Glimt | match=1.00
-NO_PRED | Novi Pazar vs Železničar Pančevo | match=1.00
-NO_PRED | IFK Norrkoping vs Ljungskile SK | match=0.85
 MISSING | Oster vs Nordic United | best=0.69
-NO_PRED | Başakşehir vs Galatasaray | match=1.00
-NO_PRED | Independiente F.b.c. vs Fernando De La Mora | match=0.88
-NO_PRED | FC Aarau vs Rapperswil | match=0.90
-NO_PRED | SC Kriens vs Stade Lausanne-Ouchy | match=0.91
-NO_PRED | NK Varazdin vs Istra 1961 | match=0.92
-NO_PRED | Sparta Rotterdam vs PEC Zwolle | match=0.88
 NO_PRED | FC Cajamarca vs Cienciano | match=1.00
-NO_PRED | Ind. Juniors vs Deportivo Cuenca Juniors | match=1.00
-NO_PRED | Nafta vs Radomlje | match=1.00
-NO_PRED | Étoile Carouge vs FC WIL 1900 | match=0.77
-NO_PRED | FC Winterthur vs Neuchatel Xamax FC | match=0.75
-NO_PRED | VfB Stuttgart vs 1. FC Köln | match=0.81
-NO_PRED | Livingston vs Stenhousemuir | match=1.00
-NO_PRED | Las Palmas vs Leganes | match=1.00
 MISSING | Piast vs Katowice | best=0.68
-NO_PRED | Lommel United vs Club Brugge KV | match=0.72
-NO_PRED | Briton Ferry vs Airbus UK | match=0.90
 MISSING | Caernarfon vs Flint | best=0.63
 MISSING | Cardiff Metropolitan vs Cambrian United | best=0.68
-NO_PRED | GAP Connah S Quay FC vs Haverfordwest County AFC | match=0.77
-NO_PRED | Holywell vs Trefelin | match=1.00
-NO_PRED | Llandudno vs Ammanford AFC | match=0.91
-NO_PRED | Bray Wanderers vs Cork City | match=0.72
-NO_PRED | Cobh Ramblers vs UCD | match=0.75
-NO_PRED | Finn Harps vs Athlone Town | match=0.87
-NO_PRED | Treaty United vs Wexford | match=1.00
 MISSING | Drogheda vs Galway | best=0.66
-NO_PRED | Waterford vs Sligo Rovers | match=1.00
-NO_PRED | Genoa vs Como | match=1.00
-NO_PRED | Real Betis vs Real Madrid | match=1.00
-NO_PRED | Ipswich vs Liverpool | match=1.00
-NO_PRED | Sandefjord vs Viking | match=1.00
 MISSING | Termalica vs Lechia | best=0.52
 NO_PRED | União Santarém vs Caldas | match=0.86
-NO_PRED | La Luz vs Sportivo Huracan | match=0.80
 MISSING | PSG vs Monaco | best=0.64
-NO_PRED | FC Porto vs Moreirense | match=1.00
-NO_PRED | Sportivo Carapeguá vs Paraguari AC | match=1.00
 MISSING | Alianza Atletico vs UTC | best=0.69
 MISSING | Leones vs Atletico FC | best=0.65
-NO_PRED | Atletico FC vs 9 de Octubre | match=0.89
-NO_PRED | 22 de Julio vs Gualaceo SC | match=1.00
 
 RANKED
+B | FC Aarau vs Rapperswil | rank=171.88 raw=76.0 weak=0.801 cal=0.715 cons=0.742 emp=0.700 maxFTS=0.200 minL5scored=4/5 odds=0.00 v291=BLOCK:away_v291_a_outlier_conversion v299A=BLOCK:away_v291_a_outlier_conversion v299B=PASS match=0.90
+X | Cobh Ramblers vs UCD | rank=75.49 raw=52.9 weak=0.668 cal=0.673 cons=0.718 emp=1.000 maxFTS=0.000 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.75
+X | Vejle vs Vendsyssel FF | rank=72.27 raw=68.9 weak=0.861 cal=0.682 cons=0.728 emp=0.600 maxFTS=0.100 minL5scored=4/5 odds=0.00 v291=BLOCK:home_v29_a_opp_concede_rate v299A=BLOCK:home_v29_a_opp_concede_rate v299B=BLOCK:home_v299_clean_sheet_wall match=0.93
+X | Uljanik vs Dugo Selo | rank=69.94 raw=53.9 weak=0.668 cal=0.698 cons=0.698 emp=0.750 maxFTS=0.000 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.87
+X | Aalesund vs Start | rank=68.33 raw=81.2 weak=0.708 cal=0.789 cons=0.743 emp=0.700 maxFTS=0.300 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:home_v291_outlier_conversion match=1.00
 X | Shamrock Rovers vs Shelbourne | rank=66.95 raw=91.6 weak=0.719 cal=0.672 cons=0.704 emp=0.750 maxFTS=0.300 minL5scored=4/5 odds=1.80 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v299_weak_leg_probability match=1.00
+X | Pogoń Grod. Mazowiecki vs Warta Poznań | rank=66.16 raw=55.8 weak=0.742 cal=0.618 cons=0.667 emp=0.646 maxFTS=0.125 minL5scored=4/5 odds=0.00 v291=BLOCK:home_v291_a_outlier_conversion v299A=BLOCK:home_v291_a_outlier_conversion v299B=BLOCK:home_v291_outlier_conversion match=0.88
+X | Ipswich vs Liverpool | rank=65.81 raw=61.7 weak=0.729 cal=0.604 cons=0.669 emp=0.707 maxFTS=0.200 minL5scored=5/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:away_v29_opp_avg_ga match=1.00
+X | Lyon vs Auxerre | rank=64.82 raw=68.6 weak=0.794 cal=0.678 cons=0.693 emp=0.550 maxFTS=0.300 minL5scored=5/5 odds=0.00 v291=BLOCK:v29_a_concession_evidence_missing v299A=BLOCK:v29_a_concession_evidence_missing v299B=BLOCK:v29_concession_evidence_missing match=1.00
+X | Sportivo Carapeguá vs Paraguari AC | rank=64.44 raw=62.5 weak=0.737 cal=0.611 cons=0.661 emp=0.639 maxFTS=0.200 minL5scored=4/5 odds=0.00 v291=BLOCK:v29_a_calibrated_floor v299A=BLOCK:v29_a_calibrated_floor v299B=BLOCK:away_v299_clean_sheet_wall match=1.00
+X | Real Betis vs Real Madrid | rank=63.46 raw=48.2 weak=0.794 cal=0.472 cons=0.610 emp=0.600 maxFTS=0.100 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_model_disagreement v299A=BLOCK:v291_a_model_disagreement v299B=BLOCK:v291_model_disagreement match=1.00
+X | VfB Stuttgart vs 1. FC Köln | rank=59.95 raw=58.5 weak=0.729 cal=0.636 cons=0.635 emp=0.467 maxFTS=0.200 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v29_concession_evidence_missing match=0.81
+X | Independiente F.b.c. vs Fernando De La Mora | rank=59.39 raw=45.2 weak=0.725 cal=0.439 cons=0.581 emp=0.650 maxFTS=0.200 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_model_disagreement match=0.88
+X | Briton Ferry vs Airbus UK | rank=59.37 raw=62.4 weak=0.668 cal=0.699 cons=0.658 emp=0.550 maxFTS=0.333 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.90
+X | Fredrikstad vs Bodo/Glimt | rank=57.18 raw=37.1 weak=0.769 cal=0.461 cons=0.583 emp=0.533 maxFTS=0.300 minL5scored=5/5 odds=0.00 v291=BLOCK:v291_a_model_disagreement v299A=BLOCK:v291_a_model_disagreement v299B=BLOCK:v291_model_disagreement match=1.00
+X | Başakşehir vs Galatasaray | rank=55.60 raw=45.4 weak=0.673 cal=0.539 cons=0.588 emp=0.550 maxFTS=0.300 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Étoile Carouge vs FC WIL 1900 | rank=55.17 raw=80.3 weak=0.654 cal=0.743 cons=0.646 emp=0.414 maxFTS=0.400 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.77
+X | SC Kriens vs Stade Lausanne-Ouchy | rank=54.44 raw=58.0 weak=0.680 cal=0.596 cons=0.584 emp=0.388 maxFTS=0.200 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.91
+X | Chornomorets vs Livyi Bereh | rank=50.12 raw=37.5 weak=0.700 cal=0.455 cons=0.540 emp=0.450 maxFTS=0.400 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.90
+X | Viborg vs Lyngby | rank=50.05 raw=43.4 weak=0.679 cal=0.431 cons=0.522 emp=0.450 maxFTS=0.300 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Hobro vs Hvidovre | rank=49.29 raw=38.4 weak=0.564 cal=0.481 cons=0.514 emp=0.500 maxFTS=0.200 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Polessya vs Kudrivka | rank=48.82 raw=54.9 weak=0.695 cal=0.641 cons=0.610 emp=0.393 maxFTS=0.714 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.78
+X | Holywell vs Trefelin | rank=48.66 raw=66.2 weak=0.528 cal=0.720 cons=0.578 emp=0.500 maxFTS=0.500 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Finn Harps vs Athlone Town | rank=47.77 raw=27.0 weak=0.668 cal=0.406 cons=0.467 emp=0.250 maxFTS=0.000 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.87
+X | Sparta Rotterdam vs PEC Zwolle | rank=46.86 raw=40.8 weak=0.643 cal=0.534 cons=0.556 emp=0.450 maxFTS=0.600 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.88
+X | FC Winterthur vs Neuchatel Xamax FC | rank=46.76 raw=45.2 weak=0.617 cal=0.465 cons=0.515 emp=0.450 maxFTS=0.400 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.75
+X | Waterford vs Sligo Rovers | rank=45.10 raw=36.5 weak=0.474 cal=0.491 cons=0.494 emp=0.536 maxFTS=0.300 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Livingston vs Stenhousemuir | rank=43.82 raw=28.5 weak=0.741 cal=0.489 cons=0.494 emp=0.071 maxFTS=0.300 minL5scored=3/5 odds=0.00 v291=BLOCK:home_v291_a_outlier_conversion v299A=BLOCK:home_v291_a_outlier_conversion v299B=BLOCK:home_v291_outlier_conversion match=1.00
+X | Stal Stalowa Wola vs Zawisza Bydgoszcz | rank=43.61 raw=33.8 weak=0.679 cal=0.451 cons=0.481 emp=0.200 maxFTS=0.300 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.71
+X | Treaty United vs Wexford | rank=42.61 raw=52.8 weak=0.528 cal=0.633 cons=0.553 emp=0.417 maxFTS=0.667 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Las Palmas vs Leganes | rank=41.65 raw=38.7 weak=0.553 cal=0.433 cons=0.468 emp=0.400 maxFTS=0.400 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Arminia Bielefeld vs FC St. Pauli | rank=40.78 raw=44.6 weak=0.486 cal=0.428 cons=0.451 emp=0.444 maxFTS=0.333 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | IFK Norrkoping vs Ljungskile SK | rank=39.62 raw=18.6 weak=0.614 cal=0.314 cons=0.426 emp=0.350 maxFTS=0.400 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.85
+X | Novi Pazar vs Železničar Pančevo | rank=39.50 raw=41.1 weak=0.535 cal=0.450 cons=0.467 emp=0.388 maxFTS=0.500 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | FC Porto vs Moreirense | rank=39.39 raw=24.8 weak=0.553 cal=0.353 cons=0.432 emp=0.400 maxFTS=0.400 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Vasas vs Nyiregyhaza | rank=38.22 raw=32.1 weak=0.423 cal=0.451 cons=0.441 emp=0.450 maxFTS=0.375 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Lommel United vs Club Brugge KV | rank=37.99 raw=31.3 weak=0.668 cal=0.441 cons=0.432 emp=0.000 maxFTS=0.250 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.72
+X | Llandudno vs Ammanford AFC | rank=37.67 raw=24.7 weak=0.668 cal=0.353 cons=0.453 emp=0.300 maxFTS=0.667 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.91
+X | NK Varazdin vs Istra 1961 | rank=37.59 raw=41.5 weak=0.540 cal=0.412 cons=0.444 emp=0.350 maxFTS=0.500 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.92
+X | Sandefjord vs Viking | rank=37.32 raw=52.9 weak=0.359 cal=0.537 cons=0.409 emp=0.467 maxFTS=0.300 minL5scored=3/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Hannover 96 vs Karlsruher SC | rank=36.66 raw=60.1 weak=0.379 cal=0.591 cons=0.429 emp=0.444 maxFTS=0.444 minL5scored=4/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.92
+X | HB Koge vs Hillerød | rank=31.89 raw=19.0 weak=0.359 cal=0.443 cons=0.405 emp=0.400 maxFTS=0.500 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.83
+X | Ind. Juniors vs Deportivo Cuenca Juniors | rank=29.60 raw=0.0 weak=0.540 cal=0.176 cons=0.328 emp=0.300 maxFTS=0.500 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Genoa vs Como | rank=28.83 raw=52.8 weak=0.359 cal=0.588 cons=0.409 emp=0.317 maxFTS=0.700 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Al-Ittihad Kalba vs Al Ain | rank=23.88 raw=19.5 weak=0.362 cal=0.296 cons=0.293 emp=0.167 maxFTS=0.333 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.95
+X | 22 de Julio vs Gualaceo SC | rank=20.91 raw=20.2 weak=0.359 cal=0.256 cons=0.303 emp=0.310 maxFTS=0.714 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Al-Wasl FC vs Khorfakkan | rank=16.18 raw=0.0 weak=0.362 cal=0.277 cons=0.251 emp=0.000 maxFTS=0.500 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=1.00
+X | Atletico FC vs 9 de Octubre | rank=14.72 raw=0.0 weak=0.287 cal=0.092 cons=0.192 emp=0.250 maxFTS=0.500 minL5scored=2/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.89
+X | GAP Connah S Quay FC vs Haverfordwest County AFC | rank=10.86 raw=0.0 weak=0.362 cal=0.010 cons=0.164 emp=0.167 maxFTS=0.667 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.77
+X | La Luz vs Sportivo Huracan | rank=2.40 raw=0.0 weak=0.241 cal=0.068 cons=0.126 emp=0.056 maxFTS=0.778 minL5scored=1/5 odds=0.00 v291=BLOCK:v291_a_weakest_probability v299A=BLOCK:v291_a_weakest_probability v299B=BLOCK:v291_weakest_probability match=0.80
+X | Bali United vs PSS Sleman | rank=-15.00 raw=24.0 weak=0.000 cal=0.000 cons=0.000 emp=0.000 maxFTS=1.000 minL5scored=0/5 odds=0.00 v291=BLOCK:v291_evidence_missing v299A=BLOCK:v291_evidence_missing v299B=BLOCK:v291_evidence_missing match=1.00
+X | Pattani vs BG Pathum United | rank=-15.00 raw=24.0 weak=0.000 cal=0.000 cons=0.000 emp=0.000 maxFTS=1.000 minL5scored=0/5 odds=0.00 v291=BLOCK:v291_evidence_missing v299A=BLOCK:v291_evidence_missing v299B=BLOCK:v291_evidence_missing match=0.95
+X | Uttaradit vs Muangthong United | rank=-15.00 raw=24.0 weak=0.000 cal=0.000 cons=0.000 emp=0.000 maxFTS=1.000 minL5scored=0/5 odds=0.00 v291=BLOCK:v291_evidence_missing v299A=BLOCK:v291_evidence_missing v299B=BLOCK:v291_evidence_missing match=0.87
+X | Lucko vs Solin | rank=-15.00 raw=24.0 weak=0.000 cal=0.000 cons=0.000 emp=0.000 maxFTS=1.000 minL5scored=0/5 odds=0.00 v291=BLOCK:v291_evidence_missing v299A=BLOCK:v291_evidence_missing v299B=BLOCK:v291_evidence_missing match=1.00
+X | Liptovský Mikuláš vs Inter Bratislava | rank=-15.00 raw=33.8 weak=0.000 cal=0.000 cons=0.000 emp=0.000 maxFTS=1.000 minL5scored=0/5 odds=0.00 v291=BLOCK:v291_evidence_missing v299A=BLOCK:v291_evidence_missing v299B=BLOCK:v291_evidence_missing match=1.00
+X | Nafta vs Radomlje | rank=-15.00 raw=47.4 weak=0.000 cal=0.000 cons=0.000 emp=0.000 maxFTS=1.000 minL5scored=0/5 odds=0.00 v291=BLOCK:v291_evidence_missing v299A=BLOCK:v291_evidence_missing v299B=BLOCK:v291_evidence_missing match=1.00
+X | Bray Wanderers vs Cork City | rank=-15.00 raw=47.2 weak=0.000 cal=0.000 cons=0.000 emp=0.000 maxFTS=1.000 minL5scored=0/5 odds=0.00 v291=BLOCK:v291_evidence_missing v299A=BLOCK:v291_evidence_missing v299B=BLOCK:v291_evidence_missing match=0.72
