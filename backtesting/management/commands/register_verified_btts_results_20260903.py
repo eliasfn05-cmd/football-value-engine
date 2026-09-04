@@ -12,6 +12,8 @@ VERIFIED = [
     ("2026-09-03", "Lugano", "Servette", 1, 0, "LOSS", "TOP3"),
     ("2026-09-03", "Sol de America", "General Caballero JLM", 1, 1, "WIN", "B+"),
     ("2026-09-03", "Recoleta", "Cerro Porteno", 1, 3, "WIN", "B"),
+    ("2026-09-03", "Puerto Cabello", "La Guaira", 1, 1, "WIN", "B-"),
+    ("2026-09-03", "Tepatitlan", "Dorados", 1, 4, "WIN", "B"),
 ]
 
 
