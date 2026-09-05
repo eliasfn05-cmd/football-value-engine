@@ -1,0 +1,42 @@
+name: btts-filter-20260905-late-existing
+
+on:
+  push:
+    paths:
+      - '.github/workflows/btts-filter-20260905-late-existing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  filter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUNBUFFERED: "1"
+      SECRET_KEY: btts-late-existing-cli-key
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+      APP_TIMEZONE: America/Lima
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -q -r requirements.txt
+      - name: Run fast Sep 5 BTTS existing ranking
+        run: |
+          mkdir -p docs/audits
+          OUT=docs/audits/btts_filter_20260905_late_existing.txt
+          echo "RUN_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT"
+          python manage.py btts_filter_20260905_late_existing >> "$OUT" 2>&1
+          cat "$OUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$OUT"
+          git commit -m "chore(filter): persist Sep 5 fast BTTS ranking" || true
+          git push
