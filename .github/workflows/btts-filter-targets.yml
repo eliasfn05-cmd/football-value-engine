@@ -1,0 +1,40 @@
+name: btts-filter-targets
+
+on:
+  push:
+    paths:
+      - 'config/btts_scan_targets.json'
+      - 'backtesting/management/commands/btts_filter_targets.py'
+      - '.github/workflows/btts-filter-targets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  filter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONUNBUFFERED: "1"
+      SECRET_KEY: btts-target-filter-cli-key
+      DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+      APP_TIMEZONE: America/Lima
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -q -r requirements.txt
+      - name: Run reusable BTTS target scan
+        run: |
+          DATE=$(python - <<'PY'
+          import json
+          print(json.load(open('config/btts_scan_targets.json', encoding='utf-8'))['date'])
+          PY
+          )
+          python manage.py btts_filter_targets --date "$DATE" --targets-file config/btts_scan_targets.json
