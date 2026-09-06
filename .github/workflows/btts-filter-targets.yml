@@ -21,6 +21,7 @@ jobs:
       DEBUG: "False"
       ALLOWED_HOSTS: localhost,127.0.0.1
       DATABASE_URL: ${{ secrets.RENDER_DATABASE_URL }}
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
       APP_TIMEZONE: America/Lima
     steps:
       - uses: actions/checkout@v4
@@ -30,11 +31,16 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -q -r requirements.txt
-      - name: Run reusable BTTS target scan
+      - name: Load target date
+        id: target
         run: |
           DATE=$(python - <<'PY'
           import json
           print(json.load(open('config/btts_scan_targets.json', encoding='utf-8'))['date'])
           PY
           )
-          python manage.py btts_filter_targets --date "$DATE" --targets-file config/btts_scan_targets.json
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+      - name: Ingest target-date fixtures
+        run: python manage.py ingest_daily --date "${{ steps.target.outputs.date }}" --fixtures-only
+      - name: Run reusable BTTS target scan
+        run: python manage.py btts_filter_targets --date "${{ steps.target.outputs.date }}" --targets-file config/btts_scan_targets.json
