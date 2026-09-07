@@ -11,11 +11,8 @@ from django.core.management.base import BaseCommand, CommandError
 
 from engine.btts_v25_policy import anti_zero_metrics
 from engine.btts_v2911_policy import v2911_goal_environment_metrics
-from engine.btts_v2912_policy import (
-    anti_zero_decision_v2912,
-    tier_a_decision_v2912,
-    v2912_low_total_metrics,
-)
+from engine.btts_v2912_policy import v2912_low_total_metrics
+from engine.btts_v2913_policy import anti_zero_decision_v2913, tier_a_decision_v2913
 from engine.competition_quality import classify_competition
 from engine.models import Fixture, FixtureScoreState, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
@@ -38,7 +35,7 @@ def decision_text(decision) -> str:
 
 
 class Command(BaseCommand):
-    help = "Reusable BTTS target scanner using V2.9.12 hard anti-zero + minimum-two-goal policy; odds excluded."
+    help = "Reusable BTTS target scanner using V2.9.13 ultra-low-total hard guard; odds excluded."
 
     def add_arguments(self, parser):
         parser.add_argument("--date", required=True, help="Fixture date YYYY-MM-DD")
@@ -61,7 +58,7 @@ class Command(BaseCommand):
         threshold = float(options["match_threshold"])
         fixtures = list(Fixture.objects.filter(kickoff__date=day).select_related("home_team", "away_team", "competition_ref"))
         self.stdout.write(f"BTTS TARGET FILTER | {day} | targets={len(targets)} db_fixtures={len(fixtures)}")
-        self.stdout.write(f"POLICY | V2.9.12 hard anti-zero + low-total exclusion | odds excluded | match_threshold={threshold:.2f}")
+        self.stdout.write(f"POLICY | V2.9.13 ultra-low-total guard | odds excluded | match_threshold={threshold:.2f}")
 
         matched: list[tuple[str, str, float, Fixture]] = []
         missing = excluded = 0
@@ -115,8 +112,8 @@ class Command(BaseCommand):
             anti = anti_zero_metrics(prediction)
             goal = v2911_goal_environment_metrics(prediction)
             low = v2912_low_total_metrics(prediction)
-            d_a = tier_a_decision_v2912(prediction)
-            d_b = anti_zero_decision_v2912(prediction)
+            d_a = tier_a_decision_v2913(prediction)
+            d_b = anti_zero_decision_v2913(prediction)
 
             weak = float(anti.get("weakest_score_probability", 0.0) or 0.0)
             cal = float(anti.get("calibrated_probability", 0.0) or 0.0)
@@ -132,26 +129,28 @@ class Command(BaseCommand):
             overall3 = int(low.get("min_overall_last3_ge2", 0) or 0)
             role_avg = float(low.get("min_role_avg_total", 0.0) or 0.0)
             overall_avg = float(low.get("min_overall_avg_total", 0.0) or 0.0)
+            role_low = int(low.get("max_role_last5_low_total", 5) or 0)
+            overall_low = int(low.get("max_overall_last5_low_total", 5) or 0)
 
             tier = "A" if d_a is None else ("B" if d_b is None else "X")
             rank = (
                 (100 if tier == "A" else 65 if tier == "B" else 0)
-                + cons * 25 + weak * 20 + cal * 10 + emp * 10 + p2 * 25
-                - p00 * 50 + min(total_lambda, 4.0) * 3 + min(weak_lambda, 2.0) * 3
-                + role5 * 2 + overall5 * 2 + role3 + overall3
+                + cons * 20 + weak * 20 + cal * 10 + emp * 10 + p2 * 30
+                - p00 * 60 + min(total_lambda, 4.5) * 4 + min(weak_lambda, 2.2) * 4
+                + role5 * 2 + overall5 * 2 - role_low * 12 - overall_low * 12
             )
-            rows.append((rank, tier, fixture, prediction, weak, cal, cons, emp, total_lambda, p2, p00, weak_lambda, role5, overall5, role3, overall3, role_avg, overall_avg, d_a, d_b, best))
+            rows.append((rank, tier, fixture, prediction, weak, cal, cons, emp, total_lambda, p2, p00, weak_lambda, role5, overall5, role3, overall3, role_avg, overall_avg, role_low, overall_low, d_a, d_b, best))
 
         rows.sort(key=lambda x: x[0], reverse=True)
         self.stdout.write("\nRANKED")
-        for rank, tier, fixture, prediction, weak, cal, cons, emp, total_lambda, p2, p00, weak_lambda, role5, overall5, role3, overall3, role_avg, overall_avg, d_a, d_b, best in rows:
+        for rank, tier, fixture, prediction, weak, cal, cons, emp, total_lambda, p2, p00, weak_lambda, role5, overall5, role3, overall3, role_avg, overall_avg, role_low, overall_low, d_a, d_b, best in rows:
             self.stdout.write(
                 f"{tier} | {fixture.home_team.name} vs {fixture.away_team.name} | rank={rank:.2f} "
                 f"prob={float(prediction.probability or 0):.3f} weak={weak:.3f} cal={cal:.3f} cons={cons:.3f} emp={emp:.3f} "
                 f"goalLambda={total_lambda:.2f} P2plus={p2:.3f} P00={p00:.3f} weakGoalLambda={weak_lambda:.2f} "
                 f"role5_2plus={role5}/5 overall5_2plus={overall5}/5 role3_2plus={role3}/3 overall3_2plus={overall3}/3 "
-                f"minRoleAvgTotal={role_avg:.2f} minOverallAvgTotal={overall_avg:.2f} "
-                f"v2912A={decision_text(d_a)} v2912B={decision_text(d_b)} match={best:.2f}"
+                f"roleLow5={role_low} overallLow5={overall_low} minRoleAvgTotal={role_avg:.2f} minOverallAvgTotal={overall_avg:.2f} "
+                f"v2913A={decision_text(d_a)} v2913B={decision_text(d_b)} match={best:.2f}"
             )
 
         a_count = sum(1 for r in rows if r[1] == "A")
