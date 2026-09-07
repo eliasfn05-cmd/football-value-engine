@@ -3,16 +3,16 @@ from __future__ import annotations
 """BTTS V2.9.9 emergency precision guard.
 
 Post-mortem targets: Copenhagen-Nordsjaelland 2-0 and Lugano-Servette 1-0.
-Both are ONE_SIDED BTTS losses.  V2.9.9 is deliberately conservative: a
+Both are ONE_SIDED BTTS losses. V2.9.9 is deliberately conservative: a
 candidate cannot be Tier A merely because both attacks have recently scored;
 the weaker scoring leg must also face a defence that has repeatedly conceded.
 
-This patch is additive over V2.9.1.  It does not weaken any existing gate.
+This patch is additive over V2.9.2. It does not weaken any existing gate.
 """
 
 from .btts_v25_policy import anti_zero_metrics
 from .btts_v27_policy import _opponent_concession_metrics
-from .btts_v291_policy import anti_zero_decision_v291, tier_a_decision_v291
+from .btts_v292_policy import anti_zero_decision_v292, tier_a_decision_v292
 
 # Generic Premium: reject obvious clean-sheet / one-sided traps.
 V299_MIN_WEAKEST_SCORE_PROB = 0.72
@@ -34,8 +34,8 @@ V299_A_MIN_CALIBRATED_PROB = 0.65
 def _decision(prediction, *, tier_a: bool = False):
     from .premium_risk_guard import PremiumRiskDecision
 
-    # Preserve every V2.9.1/V2.9 gate first.
-    base = tier_a_decision_v291(prediction) if tier_a else anti_zero_decision_v291(prediction)
+    # Preserve every V2.9.2/V2.9.1/V2.9 gate first.
+    base = tier_a_decision_v292(prediction) if tier_a else anti_zero_decision_v292(prediction)
     if base is not None:
         return base
 
