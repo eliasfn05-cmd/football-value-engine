@@ -12,6 +12,11 @@ from django.core.management.base import BaseCommand, CommandError
 from engine.btts_v25_policy import anti_zero_metrics
 from engine.btts_v299_policy import tier_a_decision_v299, anti_zero_decision_v299
 from engine.btts_v2910_policy import tier_a_decision_v2910, anti_zero_decision_v2910
+from engine.btts_v2911_policy import (
+    tier_a_decision_v2911,
+    anti_zero_decision_v2911,
+    v2911_goal_environment_metrics,
+)
 from engine.competition_quality import classify_competition
 from engine.models import Fixture, FixtureScoreState, Prediction
 from engine.score_v8 import V8_MODEL_VERSION
@@ -34,7 +39,7 @@ def decision_text(decision) -> str:
 
 
 class Command(BaseCommand):
-    help = "Reusable BTTS screenshot/target scanner using V2.9.10 hard anti-zero policy with odds excluded."
+    help = "Reusable BTTS screenshot/target scanner using V2.9.11 hard anti-zero/two-goal policy with odds excluded."
 
     def add_arguments(self, parser):
         parser.add_argument("--date", required=True, help="Fixture date YYYY-MM-DD")
@@ -56,7 +61,7 @@ class Command(BaseCommand):
 
         fixtures = list(Fixture.objects.filter(kickoff__date=day).select_related("home_team", "away_team", "competition_ref"))
         self.stdout.write(f"BTTS TARGET FILTER | {day} | targets={len(targets)} db_fixtures={len(fixtures)}")
-        self.stdout.write(f"POLICY | V2.9.10 hard anti-zero | odds excluded | match_threshold={threshold:.2f}")
+        self.stdout.write(f"POLICY | V2.9.11 hard anti-zero + two-goal floor | odds excluded | match_threshold={threshold:.2f}")
 
         matched_targets: list[tuple[str, str, float, Fixture]] = []
         missing = excluded = 0
@@ -117,10 +122,13 @@ class Command(BaseCommand):
                 continue
 
             metrics = anti_zero_metrics(prediction)
+            goal_env = v2911_goal_environment_metrics(prediction)
             d299a = tier_a_decision_v299(prediction)
             d299b = anti_zero_decision_v299(prediction)
             d2910a = tier_a_decision_v2910(prediction)
             d2910b = anti_zero_decision_v2910(prediction)
+            d2911a = tier_a_decision_v2911(prediction)
+            d2911b = anti_zero_decision_v2911(prediction)
             available = bool(metrics.get("available"))
             weak = float(metrics.get("weakest_score_probability", 0.0) or 0.0)
             cal = float(metrics.get("calibrated_probability", 0.0) or 0.0)
@@ -136,34 +144,41 @@ class Command(BaseCommand):
             l5s = min(int(home_o.get("last5_scored", 0) or 0), int(away_o.get("last5_scored", 0) or 0)) if available else 0
             role_l5s = min(int(home_r.get("last5_scored", 0) or 0), int(away_r.get("last5_scored", 0) or 0)) if available else 0
             l5b = min(int(home_o.get("last5_btts", 0) or 0), int(away_o.get("last5_btts", 0) or 0)) if available else 0
+            total_lambda = float(goal_env.get("total_goal_lambda", 0.0) or 0.0)
+            p2 = float(goal_env.get("p_ge_2_goals", 0.0) or 0.0)
+            p00 = float(goal_env.get("p_zero_zero", 1.0) or 1.0)
+            weak_lambda = float(goal_env.get("weakest_goal_lambda", 0.0) or 0.0)
 
-            tier = "A" if d2910a is None else ("B" if d2910b is None else "X")
+            tier = "A" if d2911a is None else ("B" if d2911b is None else "X")
             rank = (
                 (100 if tier == "A" else 65 if tier == "B" else 0)
-                + cons * 35
-                + weak * 30
-                + cal * 20
-                + emp * 15
+                + cons * 30
+                + weak * 25
+                + cal * 15
+                + emp * 10
+                + p2 * 20
                 - fts * 25
                 - role_fts * 20
                 - max_zero * 25
-                + l5s * 1.5
-                + role_l5s * 1.0
-                + l5b * 1.0
+                - p00 * 40
+                + min(total_lambda, 3.5) * 2.0
+                + min(weak_lambda, 1.8) * 2.0
             )
-            rows.append((rank, tier, fixture, prediction, weak, cal, cons, emp, max_zero, fts, role_fts, l5s, role_l5s, l5b, d299a, d299b, d2910a, d2910b, best))
+            rows.append((rank, tier, fixture, prediction, weak, cal, cons, emp, max_zero, fts, role_fts, l5s, role_l5s, l5b, total_lambda, p2, p00, weak_lambda, d299a, d299b, d2910a, d2910b, d2911a, d2911b, best))
 
         rows.sort(key=lambda x: x[0], reverse=True)
         self.stdout.write("\nRANKED")
-        for rank, tier, fixture, prediction, weak, cal, cons, emp, max_zero, fts, role_fts, l5s, role_l5s, l5b, d299a, d299b, d2910a, d2910b, match in rows:
+        for rank, tier, fixture, prediction, weak, cal, cons, emp, max_zero, fts, role_fts, l5s, role_l5s, l5b, total_lambda, p2, p00, weak_lambda, d299a, d299b, d2910a, d2910b, d2911a, d2911b, match in rows:
             self.stdout.write(
                 f"{tier} | {fixture.home_team.name} vs {fixture.away_team.name} | rank={rank:.2f} "
                 f"raw={float(prediction.score or 0):.1f} prob={float(prediction.probability or 0):.3f} "
                 f"weak={weak:.3f} cal={cal:.3f} cons={cons:.3f} emp={emp:.3f} maxZero={max_zero:.3f} "
+                f"goalLambda={total_lambda:.2f} P2plus={p2:.3f} P00={p00:.3f} weakGoalLambda={weak_lambda:.2f} "
                 f"maxOverallFTS={fts:.3f} maxRoleFTS={role_fts:.3f} minL5scored={l5s}/5 "
                 f"minRoleL5scored={role_l5s}/5 minL5BTTS={l5b}/5 "
                 f"v299A={decision_text(d299a)} v299B={decision_text(d299b)} "
-                f"v2910A={decision_text(d2910a)} v2910B={decision_text(d2910b)} match={match:.2f}"
+                f"v2910A={decision_text(d2910a)} v2910B={decision_text(d2910b)} "
+                f"v2911A={decision_text(d2911a)} v2911B={decision_text(d2911b)} match={match:.2f}"
             )
 
         a_count = sum(1 for row in rows if row[1] == "A")
