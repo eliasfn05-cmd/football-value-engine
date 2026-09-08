@@ -5,6 +5,7 @@ on:
     paths:
       - 'config/btts_scan_targets.json'
       - 'backtesting/management/commands/btts_filter_targets.py'
+      - 'scripts/btts_api_fallback.py'
       - '.github/workflows/btts-filter-targets.yml'
   workflow_dispatch:
 
@@ -41,10 +42,13 @@ jobs:
           )
           echo "date=$DATE" >> "$GITHUB_OUTPUT"
       - name: Ingest target-date fixtures
+        id: ingest
+        continue-on-error: true
         run: |
           for attempt in 1 2 3; do
             echo "[ingest] attempt $attempt/3"
             if python manage.py ingest_daily --date "${{ steps.target.outputs.date }}" --fixtures-only; then
+              echo "ok=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -52,8 +56,10 @@ jobs:
               sleep 10
             fi
           done
+          echo "ok=false" >> "$GITHUB_OUTPUT"
           exit 1
-      - name: Run reusable BTTS target scan
+      - name: Run DB-backed BTTS target scan
+        if: steps.ingest.outcome == 'success'
         run: |
           for attempt in 1 2 3; do
             echo "[scan] attempt $attempt/3"
@@ -66,3 +72,6 @@ jobs:
             fi
           done
           exit 1
+      - name: Run API fallback BTTS scan
+        if: steps.ingest.outcome != 'success'
+        run: python scripts/btts_api_fallback.py config/btts_scan_targets.json
