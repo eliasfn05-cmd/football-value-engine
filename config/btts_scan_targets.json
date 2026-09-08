@@ -33,5 +33,6 @@
     ["Inter Palmira", "Atletico FC"],
     ["San Antonio", "Louisville City"],
     ["Boca Juniors", "Sao Paulo"]
-  ]
+  ],
+  "run_note": "api-fallback-rerun-2026-09-08"
 }
