@@ -23,6 +23,7 @@ class EngineConfig(AppConfig):
         from .btts_v2911_policy import install_btts_v2911_policy
         from .btts_v2912_policy import install_btts_v2912_policy
         from .btts_v2913_policy import install_btts_v2913_policy
+        from .btts_v2914_policy import install_btts_v2914_policy
 
         install_h2h_guard()
         install_btts_v2_policy()
@@ -40,3 +41,4 @@ class EngineConfig(AppConfig):
         install_btts_v2911_policy()
         install_btts_v2912_policy()
         install_btts_v2913_policy()
+        install_btts_v2914_policy()
