@@ -34,6 +34,8 @@ class MatchEvidence:
     h2h_under15_last5: Optional[int] = None
     consecutive_h2h_one_team_fts: Optional[bool] = None
     data_as_of: Optional[date] = None
+    is_cup_final: bool = False
+    is_two_leg_first_match: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,12 @@ class GateResult:
 
 def evaluate_over15_premium(e: MatchEvidence, match_date: date) -> GateResult:
     reasons = []
+    # Contextual veto: finals and first legs are not eligible for Premium Over 1.5.
+    # This is a conservative exclusion rule, not proof that such games are low scoring.
+    if e.is_cup_final:
+        reasons.append("Final de copa: exclusión preventiva de Premium Over1.5")
+    if e.is_two_leg_first_match:
+        reasons.append("Ida de eliminatoria: exclusión preventiva de Premium Over1.5")
     def require(condition: bool, message: str) -> None:
         if not condition:
             reasons.append(message)
